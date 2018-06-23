@@ -4,34 +4,45 @@ import unicodedata
 import string
 import re
 import random
+import time
+import datetime
+import math
 
 import torch
 import torch.nn as nn
 from torch.autograd import Variable
 from torch import optim
 import torch.nn.functional as F
+from torch.nn.utils.rnn import pad_packed_sequence, pack_padded_sequence  # , masked_cross_entropy
+from .masked_cross_entropy import *
+
+import matplotlib.pyplot as plt
+import matplotlib.ticker as ticker
+import numpy as np
 from .models import AttnDecoderRNN, EncoderRNN
 from .beam_search import BeamSearch
 
 use_cuda = torch.cuda.is_available()
 
-SOS_token = 0
-EOS_token = 1
+PAD_token = 0
+SOS_token = 1
+EOS_token = 2
 
 
 class Lang:
     def __init__(self, name):
         self.name = name
+        self.trimmed = False
         self.word2index = {}
         self.word2count = {}
-        self.index2word = {0: "SOS", 1: "EOS"}
-        self.n_words = 2  # Count SOS and EOS
+        self.index2word = {0: "PAD", 1: "SOS", 2: "EOS"}
+        self.n_words = 3  # Count default tokens
 
-    def addSentence(self, sentence):
+    def index_words(self, sentence):
         for word in sentence.split(' '):
-            self.addWord(word)
+            self.index_word(word)
 
-    def addWord(self, word):
+    def index_word(self, word):
         if word not in self.word2index:
             self.word2index[word] = self.n_words
             self.word2count[word] = 1
@@ -40,10 +51,33 @@ class Lang:
         else:
             self.word2count[word] += 1
 
+    # Remove words below a certain count threshold
+    def trim(self, min_count):
+        if self.trimmed: return
+        self.trimmed = True
 
-# Turn a Unicode string to plain ASCII, thanks to
-# http://stackoverflow.com/a/518232/2809427
-def unicodeToAscii(s):
+        keep_words = []
+
+        for k, v in self.word2count.items():
+            if v >= min_count:
+                keep_words.append(k)
+
+        print('keep_words %s / %s = %.4f' % (
+            len(keep_words), len(self.word2index), len(keep_words) / len(self.word2index)
+        ))
+
+        # Reinitialize dictionaries
+        self.word2index = {}
+        self.word2count = {}
+        self.index2word = {0: "PAD", 1: "SOS", 2: "EOS"}
+        self.n_words = 3  # Count default tokens
+
+        for word in keep_words:
+            self.index_word(word)
+
+
+# Turn a Unicode string to plain ASCII, thanks to http://stackoverflow.com/a/518232/2809427
+def unicode_to_ascii(s):
     return ''.join(
         c for c in unicodedata.normalize('NFD', s)
         if unicodedata.category(c) != 'Mn'
@@ -52,23 +86,24 @@ def unicodeToAscii(s):
 
 # Lowercase, trim, and remove non-letter characters
 
-
-def normalizeString(s):
-    s = unicodeToAscii(s.lower().strip())
-    s = re.sub(r"([.!?])", r" \1", s)
-    s = re.sub(r"[^a-zA-Z.!?]+", r" ", s)
+def normalize_string(s):
+    s = unicode_to_ascii(s.lower().strip())
+    s = re.sub(r"([,.!?])", r" \1 ", s)
+    s = re.sub(r"[^a-zA-Z,.!?]+", r" ", s)
+    s = re.sub(r"\s+", r" ", s).strip()
     return s
 
 
-def readLangs(lang1, lang2, reverse=False):
+def read_langs(lang1, lang2, reverse=False):
     print("Reading lines...")
 
     # Read the file and split into lines
-    lines = open('%s-%s.txt' % (lang1, lang2), encoding='utf-8'). \
-        read().strip().split('\n')
+    #     filename = '../data/%s-%s.txt' % (lang1, lang2)
+    filename = '%s-%s.txt' % (lang1, lang2)
+    lines = open(filename).read().strip().split('\n')
 
     # Split every line into pairs and normalize
-    pairs = [[normalizeString(s) for s in l.split('\t')] for l in lines]
+    pairs = [[normalize_string(s) for s in l.split('\t')] for l in lines]
 
     # Reverse pairs, make Lang instances
     if reverse:
@@ -82,8 +117,6 @@ def readLangs(lang1, lang2, reverse=False):
     return input_lang, output_lang, pairs
 
 
-MAX_LENGTH = 10
-
 eng_prefixes = (
     "i am ", "i m ",
     "he is", "he s ",
@@ -93,122 +126,168 @@ eng_prefixes = (
     "they are", "they re "
 )
 
-
-def filterPair(p):
-    return len(p[0].split(' ')) < MAX_LENGTH and \
-           len(p[1].split(' ')) < MAX_LENGTH and \
-           p[1].startswith(eng_prefixes)
+MIN_LENGTH = 3
+MAX_LENGTH = 25
 
 
-def filterPairs(pairs):
-    return [pair for pair in pairs if filterPair(pair)]
-
-
-def prepareData(lang1, lang2, reverse=False, filter=True):
-    input_lang, output_lang, pairs = readLangs(lang1, lang2, reverse)
-    print("Read %s sentence pairs" % len(pairs))
-    if filter:
-        pairs = filterPairs(pairs)
-    print("Trimmed to %s sentence pairs" % len(pairs))
-    print("Counting words...")
+def filter_pairs(pairs):
+    filtered_pairs = []
     for pair in pairs:
-        input_lang.addSentence(pair[0])
-        output_lang.addSentence(pair[1])
-    print("Counted words:")
-    print(input_lang.name, input_lang.n_words)
-    print(output_lang.name, output_lang.n_words)
+        if len(pair[0]) >= MIN_LENGTH and len(pair[0]) <= MAX_LENGTH \
+                and len(pair[1]) >= MIN_LENGTH and len(pair[1]) <= MAX_LENGTH:
+            filtered_pairs.append(pair)
+    return filtered_pairs
+
+
+def prepare_data(lang1_name, lang2_name, reverse=False):
+    input_lang, output_lang, pairs = read_langs(lang1_name, lang2_name, reverse)
+    print("Read %d sentence pairs" % len(pairs))
+
+    pairs = filter_pairs(pairs)
+    print("Filtered to %d pairs" % len(pairs))
+
+    print("Indexing words...")
+    for pair in pairs:
+        input_lang.index_words(pair[0])
+        output_lang.index_words(pair[1])
+
+    print('Indexed %d words in input language, %d words in output' % (input_lang.n_words, output_lang.n_words))
     return input_lang, output_lang, pairs
 
 
-input_lang, output_lang, pairs = prepareData('eng', 'de', True)
+input_lang, output_lang, pairs = prepare_data('eng', 'de', True)
+
+MIN_COUNT = 5
+
+input_lang.trim(MIN_COUNT)
+output_lang.trim(MIN_COUNT)
+
+
+def filter(pairs):
+    keep_pairs = []
+
+    for pair in pairs:
+        input_sentence = pair[0]
+        output_sentence = pair[1]
+        keep_input = True
+        keep_output = True
+
+        for word in input_sentence.split(' '):
+            if word not in input_lang.word2index:
+                keep_input = False
+                break
+
+        for word in output_sentence.split(' '):
+            if word not in output_lang.word2index:
+                keep_output = False
+                break
+
+        # Remove if pair doesn't match input and output conditions
+        if keep_input and keep_output:
+            keep_pairs.append(pair)
+
+    print("Trimmed from %d pairs to %d, %.4f of total" % (len(pairs), len(keep_pairs), len(keep_pairs) / len(pairs)))
+    return keep_pairs
+
+
+pairs = filter(pairs)
 print(random.choice(pairs))
 
 
-def indexesFromSentence(lang, sentence):
-    return [lang.word2index[word] for word in sentence.split(' ')]
+# Return a list of indexes, one for each word in the sentence, plus EOS
+def indexes_from_sentence(lang, sentence):
+    return [lang.word2index[word] for word in sentence.split(' ')] + [EOS_token]
 
 
-def variable_from_sentence(lang, sentence):
-    indexes = indexesFromSentence(lang, sentence)
-    indexes.append(EOS_token)
-    result = Variable(torch.LongTensor(indexes).view(-1, 1))
+# Pad a with the PAD symbol# Pad a
+def pad_seq(seq, max_length):
+    seq += [PAD_token for i in range(max_length - len(seq))]
+    return seq
+
+
+def random_batch(batch_size):
+    input_seqs = []
+    target_seqs = []
+
+    # Choose random pairs
+    for i in range(batch_size):
+        pair = random.choice(pairs)
+        input_seqs.append(indexes_from_sentence(input_lang, pair[0]))
+        target_seqs.append(indexes_from_sentence(output_lang, pair[1]))
+
+    # Zip into pairs, sort by length (descending), unzip
+    seq_pairs = sorted(zip(input_seqs, target_seqs), key=lambda p: len(p[0]), reverse=True)
+    input_seqs, target_seqs = zip(*seq_pairs)
+
+    # For input and target sequences, get array of lengths and pad with 0s to max length
+    input_lengths = [len(s) for s in input_seqs]
+    input_padded = [pad_seq(s, max(input_lengths)) for s in input_seqs]
+    target_lengths = [len(s) for s in target_seqs]
+    target_padded = [pad_seq(s, max(target_lengths)) for s in target_seqs]
+
+    # Turn padded arrays into (batch_size x max_len) tensors, transpose into (max_len x batch_size)
+    input_var = Variable(torch.LongTensor(input_padded)).transpose(0, 1)
+    target_var = Variable(torch.LongTensor(target_padded)).transpose(0, 1)
+
     if use_cuda:
-        return result.cuda()
-    else:
-        return result
+        input_var = input_var.cuda()
+        target_var = target_var.cuda()
 
-
-def variables_from_pair(pair):
-    input_variable = variable_from_sentence(input_lang, pair[0])
-    target_variable = variable_from_sentence(output_lang, pair[1])
-    return (input_variable, target_variable)
+    return input_var, input_lengths, target_var, target_lengths
 
 
 teacher_forcing_ratio = 0.5
 clip = 5.0
 
 
-def train(input_variable, target_variable, encoder, decoder, encoder_optimizer, decoder_optimizer, criterion,
-          max_length=MAX_LENGTH):
+def train(input_batches, input_lengths, target_batches, target_lengths, encoder, decoder, encoder_optimizer,
+          decoder_optimizer, criterion, max_length=MAX_LENGTH, batch_size=50):
     # Zero gradients of both optimizers
     encoder_optimizer.zero_grad()
     decoder_optimizer.zero_grad()
     loss = 0  # Added onto for each word
 
-    # Get size of input and target sentences
-    input_length = input_variable.size()[0]
-    target_length = target_variable.size()[0]
-
     # Run words through encoder
-    encoder_hidden = encoder.init_hidden()
-    encoder_outputs, encoder_hidden = encoder(input_variable)
+    encoder_outputs, encoder_hidden = encoder(input_batches, input_lengths, None)
 
     # Prepare input and output variables
-    decoder_input = Variable(torch.LongTensor([[SOS_token]]))
-    decoder_context = Variable(torch.zeros(1, decoder.hidden_size))
-    decoder_hidden = encoder_hidden[-decoder.n_layers:]  # Use last hidden state from encoder to start decoder
+    decoder_input = Variable(torch.LongTensor([SOS_token] * batch_size))
+    decoder_hidden = encoder_hidden[:decoder.n_layers]  # Use last (forward) hidden state from encoder
+
+    max_target_length = max(target_lengths)
+    all_decoder_outputs = Variable(torch.zeros(max_target_length, batch_size, decoder.output_size))
+
+    # Move new Variables to CUDA
     if use_cuda:
         decoder_input = decoder_input.cuda()
-        decoder_context = decoder_context.cuda()
+        all_decoder_outputs = all_decoder_outputs.cuda()
 
-    # Choose whether to use teacher forcing
-    use_teacher_forcing = random.random() < teacher_forcing_ratio
-    if use_teacher_forcing:
+    # Run through decoder one time step at a time
+    for t in range(max_target_length):
+        decoder_output, decoder_hidden, decoder_attn = decoder(
+            decoder_input, decoder_hidden, encoder_outputs
+        )
 
-        # Teacher forcing: Use the ground-truth target as the next input
-        for di in range(target_length):
-            decoder_output, decoder_context, decoder_hidden, decoder_attention = decoder(decoder_input, decoder_context,
-                                                                                         decoder_hidden,
-                                                                                         encoder_outputs)
-            loss += criterion(decoder_output, target_variable[di])
-            decoder_input = target_variable[di]  # Next target is next input
+        all_decoder_outputs[t] = decoder_output
+        decoder_input = target_batches[t]  # Next input is current target
 
-    else:
-        # Without teacher forcing: use network's own prediction as the next input
-        for di in range(target_length):
-            decoder_output, decoder_context, decoder_hidden, decoder_attention = decoder(decoder_input, decoder_context,
-                                                                                         decoder_hidden,
-                                                                                         encoder_outputs)
-            loss += criterion(decoder_output, target_variable[di])
-
-            # Get most likely word index (highest value) from output
-            topv, topi = decoder_output.data.topk(1)
-            ni = topi[0][0]
-
-            decoder_input = Variable(torch.LongTensor([[ni]]))  # Chosen word is next input
-            if use_cuda: decoder_input = decoder_input.cuda()
-
-            # Stop at end of sentence (not necessary when using known targets)
-            if ni == EOS_token: break
-
-    # Backpropagation
+    # Loss calculation and backpropagation
+    loss = masked_cross_entropy(
+        all_decoder_outputs.transpose(0, 1).contiguous(),  # -> batch x seq
+        target_batches.transpose(0, 1).contiguous(),  # -> batch x seq
+        target_lengths
+    )
     loss.backward()
-    torch.nn.utils.clip_grad_norm(encoder.parameters(), clip)
-    torch.nn.utils.clip_grad_norm(decoder.parameters(), clip)
+
+    # Clip gradient norms
+    ec = torch.nn.utils.clip_grad_norm(encoder.parameters(), clip)
+    dc = torch.nn.utils.clip_grad_norm(decoder.parameters(), clip)
+
+    # Update parameters with optimizers
     encoder_optimizer.step()
     decoder_optimizer.step()
 
-    return loss.data[0] / target_length
+    return loss.data[0], ec, dc
 
 
 import time
@@ -229,10 +308,12 @@ def time_since(since, percent):
     return '%s (- %s)' % (as_minutes(s), as_minutes(rs))
 
 
-def trainIters(encoder, decoder, n_epochs=50000, print_every=100, plot_every=100, learning_rate=0.001):
+def train_iters(encoder, decoder, n_epochs=50000, print_every=100, evaluate_every=100, learning_rate=0.0001,
+                decoder_learning_ratio=5.0):
+    # Initialize optimizers and criterion
     encoder_optimizer = optim.Adam(encoder.parameters(), lr=learning_rate)
-    decoder_optimizer = optim.Adam(decoder.parameters(), lr=learning_rate)
-    criterion = nn.NLLLoss()
+    decoder_optimizer = optim.Adam(decoder.parameters(), lr=learning_rate * decoder_learning_ratio)
+    criterion = nn.CrossEntropyLoss()
 
     start = time.time()
     plot_losses = []
@@ -241,18 +322,18 @@ def trainIters(encoder, decoder, n_epochs=50000, print_every=100, plot_every=100
 
     for epoch in range(1, n_epochs + 1):
         # Get training data for this cycle
-        training_pair = variables_from_pair(random.choice(pairs))
-        input_variable = training_pair[0]
-        target_variable = training_pair[1]
+        input_batches, input_lengths, target_batches, target_lengths = random_batch(batch_size)
 
         # Run the train function
-        loss = train(input_variable, target_variable, encoder, decoder, encoder_optimizer, decoder_optimizer, criterion)
+        loss, ec, dc = train(
+            input_batches, input_lengths, target_batches, target_lengths,
+            encoder, decoder,
+            encoder_optimizer, decoder_optimizer, criterion
+        )
 
         # Keep track of loss
         print_loss_total += loss
         plot_loss_total += loss
-
-        if epoch == 0: continue
 
         if epoch % print_every == 0:
             print_loss_avg = print_loss_total / print_every
@@ -261,36 +342,42 @@ def trainIters(encoder, decoder, n_epochs=50000, print_every=100, plot_every=100
                 time_since(start, epoch / n_epochs), epoch, epoch / n_epochs * 100, print_loss_avg)
             print(print_summary)
 
-        if epoch % plot_every == 0:
-            plot_loss_avg = plot_loss_total / plot_every
-            plot_losses.append(plot_loss_avg)
-            plot_loss_total = 0
+        if epoch % evaluate_every == 0:
+            pass
+            # evaluate_randomly()
 
 
-def evaluate(encoder, decoder, sentence, max_length=MAX_LENGTH):
-    input_variable = variable_from_sentence(input_lang, sentence)
-    input_length = input_variable.size()[0]
+def evaluate(encoder, decoder, input_seq, max_length=MAX_LENGTH):
+    input_lengths = [len(input_seq)]
+    input_seqs = [indexes_from_sentence(input_lang, input_seq)]
+    input_batches = Variable(torch.LongTensor(input_seqs), volatile=True).transpose(0, 1)
+
+    if use_cuda:
+        input_batches = input_batches.cuda()
+
+    # Set to not-training mode to disable dropout
+    encoder.train(False)
+    decoder.train(False)
 
     # Run through encoder
-    encoder_hidden = encoder.init_hidden()
-    encoder_outputs, encoder_hidden = encoder(input_variable)
+    encoder_outputs, encoder_hidden = encoder(input_batches, input_lengths, None)
 
     # Create starting vectors for decoder
-    decoder_input = Variable(torch.LongTensor([[SOS_token]]))  # SOS
-    decoder_context = Variable(torch.zeros(1, decoder.hidden_size))
+    decoder_input = Variable(torch.LongTensor([SOS_token]), volatile=True)  # SOS
+    decoder_hidden = encoder_hidden[:decoder.n_layers]  # Use last (forward) hidden state from encoder
+
     if use_cuda:
         decoder_input = decoder_input.cuda()
-        decoder_context = decoder_context.cuda()
 
-    decoder_hidden = encoder_hidden[-decoder.n_layers:]
-
+    # Store output words and attention states
     decoded_words = []
-    decoder_attentions = torch.zeros(max_length, max_length)
+    decoder_attentions = torch.zeros(max_length + 1, max_length + 1)
 
     # Run through decoder
     for di in range(max_length):
-        decoder_output, decoder_context, decoder_hidden, decoder_attention = decoder(decoder_input, decoder_context,
-                                                                                     decoder_hidden, encoder_outputs)
+        decoder_output, decoder_hidden, decoder_attention = decoder(
+            decoder_input, decoder_hidden, encoder_outputs
+        )
         decoder_attentions[di, :decoder_attention.size(2)] += decoder_attention.squeeze(0).squeeze(0).cpu().data
 
         # Choose top word from output
@@ -303,22 +390,23 @@ def evaluate(encoder, decoder, sentence, max_length=MAX_LENGTH):
             decoded_words.append(output_lang.index2word[ni])
 
         # Next input is chosen word
-        decoder_input = Variable(torch.LongTensor([[ni]]))
+        decoder_input = Variable(torch.LongTensor([ni]))
         if use_cuda: decoder_input = decoder_input.cuda()
+
+    # Set back to training mode
+    encoder.train(True)
+    decoder.train(True)
 
     return decoded_words, decoder_attentions[:di + 1, :len(encoder_outputs)]
 
 
-def beamSearch(encoder, decoder, sentence, beam_size=3, attention_override=None, partial=None, max_length=MAX_LENGTH):
-    input_variable = variable_from_sentence(input_lang, sentence)
-    input_length = input_variable.size()[0]
-    encoder_hidden = encoder.init_hidden()
-
-    encoder_outputs, encoder_hidden = encoder(input_variable)
+def beamSearch(encoder, decoder, input_seq, beam_size=3, attention_override=None, partial=None, max_length=MAX_LENGTH):
+    input_lengths = [len(input_seq)]
+    input_seqs = [indexes_from_sentence(input_lang, input_seq)]
+    input_batches = Variable(torch.LongTensor(input_seqs), volatile=True).transpose(0, 1)
+    encoder_outputs, encoder_hidden = encoder(input_batches, input_lengths, None)
 
     decoder_hidden = encoder_hidden[-decoder.n_layers:]
-
-    decoder_attentions = torch.zeros(max_length, max_length)
 
     beam_search = BeamSearch(decoder, encoder_outputs, decoder_hidden, output_lang, beam_size, attention_override,
                              partial)
@@ -337,6 +425,8 @@ def evaluateRandomly(encoder, decoder, n=10):
 
 
 hidden_size = 256
+batch_size = 50
+n_epochs = 50000
 encoder1 = None
 attn_decoder1 = None
 
@@ -347,17 +437,18 @@ if not os.path.isfile("encoder.pt"):
     print(sys.argv)
     encoder1 = EncoderRNN(input_lang.n_words, hidden_size)
     attn_decoder1 = AttnDecoderRNN("general", hidden_size, output_lang.n_words)
-    trainIters(encoder1, attn_decoder1, 100000)
+
+    if use_cuda:
+        encoder1 = encoder1.cuda()
+        attn_decoder1 = attn_decoder1.cuda()
+
+    train_iters(encoder1, attn_decoder1, n_epochs)
 
     torch.save(encoder1, "encoder.pt")
     torch.save(attn_decoder1, "attn_decoder.pt")
 else:
     encoder1 = torch.load("encoder.pt")
     attn_decoder1 = torch.load("attn_decoder.pt")
-
-if use_cuda:
-    encoder1 = encoder1.cuda()
-    attn_decoder1 = attn_decoder1.cuda()
 
 
 # evaluateRandomly(encoder1, attn_decoder1)
