@@ -9,7 +9,7 @@ MAX_LENGTH = 25
 
 
 class EncoderRNN(nn.Module):
-    def __init__(self, input_size, hidden_size, n_layers=2, dropout=0.1):
+    def __init__(self, input_size, hidden_size, embed_size=256, n_layers=2, dropout=0.1):
         super(EncoderRNN, self).__init__()
 
         self.input_size = input_size
@@ -17,8 +17,8 @@ class EncoderRNN(nn.Module):
         self.n_layers = n_layers
         self.dropout = dropout
 
-        self.embedding = nn.Embedding(input_size, hidden_size)
-        self.gru = nn.GRU(hidden_size, hidden_size, n_layers, dropout=self.dropout, bidirectional=True)
+        self.embedding = nn.Embedding(input_size, embed_size)
+        self.gru = nn.GRU(embed_size, hidden_size, n_layers, dropout=self.dropout, bidirectional=True)
 
     def forward(self, input_seqs, input_lengths, hidden=None):
         # Note: we run this all at once (over the whole input sequence)
