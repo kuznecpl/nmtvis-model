@@ -1,13 +1,14 @@
 import torch
 import torch.nn as nn
+import time
 from torch.autograd import Variable
 from torch import optim
-from .hp import PAD_token, SOS_token, EOS_token, MIN_LENGTH, MAX_LENGTH
-from .masked_cross_entropy import *
+from hp import PAD_token, SOS_token, EOS_token, MIN_LENGTH, MAX_LENGTH
+from masked_cross_entropy import *
 import random
+import math
+from hp import teacher_forcing_ratio, clip
 
-teacher_forcing_ratio = 0.5
-clip = 5.0
 use_cuda = torch.cuda.is_available()
 
 
@@ -67,8 +68,9 @@ def train(input_batches, input_lengths, target_batches, target_lengths, encoder,
     return loss.data[0], ec, dc
 
 
-def train_iters(encoder, decoder, n_epochs=50000, print_every=100, evaluate_every=100, learning_rate=0.0001,
-                decoder_learning_ratio=5.0):
+def train_iters(encoder, decoder, input_lang, output_lang, pairs, n_epochs=50000, print_every=100, evaluate_every=100,
+                learning_rate=0.0001,
+                decoder_learning_ratio=5.0, batch_size=50):
     # Initialize optimizers and criterion
     encoder_optimizer = optim.Adam(encoder.parameters(), lr=learning_rate)
     decoder_optimizer = optim.Adam(decoder.parameters(), lr=learning_rate * decoder_learning_ratio)
@@ -79,9 +81,12 @@ def train_iters(encoder, decoder, n_epochs=50000, print_every=100, evaluate_ever
     print_loss_total = 0  # Reset every print_every
     plot_loss_total = 0  # Reset every plot_every
 
+    print("Starting training for n_epochs={} lr={}, batch_size={}".format(n_epochs, learning_rate, batch_size))
+
     for epoch in range(1, n_epochs + 1):
         # Get training data for this cycle
-        input_batches, input_lengths, target_batches, target_lengths = random_batch(batch_size)
+        input_batches, input_lengths, target_batches, target_lengths = random_batch(input_lang, output_lang, pairs,
+                                                                                    batch_size)
 
         # Run the train function
         loss, ec, dc = train(
@@ -135,3 +140,22 @@ def random_batch(input_lang, output_lang, pairs, batch_size):
         target_var = target_var.cuda()
 
     return input_var, input_lengths, target_var, target_lengths
+
+
+# Return a list of indexes, one for each word in the sentence, plus EOS
+def indexes_from_sentence(lang, sentence):
+    return [lang.word2index[word] for word in sentence.split(' ')] + [EOS_token]
+
+
+def as_minutes(s):
+    m = math.floor(s / 60)
+    s -= m * 60
+    return '%dm %ds' % (m, s)
+
+
+def time_since(since, percent):
+    now = time.time()
+    s = now - since
+    es = s / (percent)
+    rs = es - s
+    return '%s (- %s)' % (as_minutes(s), as_minutes(rs))
