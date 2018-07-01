@@ -7,14 +7,15 @@ from torch.autograd import Variable
 from models import AttnDecoderRNN, EncoderRNN
 from beam_search import BeamSearch
 
-from hp import PAD_token, SOS_token, EOS_token, MIN_LENGTH, MAX_LENGTH, hidden_size, batch_size, n_epochs
-from data_loader import LanguagePairLoader
+from hp import PAD_token, SOS_token, EOS_token, MIN_LENGTH, MAX_LENGTH, hidden_size, batch_size, n_epochs, embed_size
+from data_loader import LanguagePairLoader, DateConverterLoader
 
 from train import train_iters
 
 use_cuda = torch.cuda.is_available()
 
-loader = LanguagePairLoader("eng", "de")
+#loader = LanguagePairLoader("eng", "de")
+loader = DateConverterLoader()
 input_lang, output_lang, pairs = loader.load()
 
 print(random.choice(pairs))
@@ -91,6 +92,9 @@ def beamSearch(encoder, decoder, input_seq, beam_size=3, attention_override=None
     input_lengths = [len(seq) for seq in input_seqs]
     input_batches = Variable(torch.LongTensor(input_seqs), volatile=True).transpose(0, 1)
 
+    if use_cuda:
+        input_batches = input_batches.cuda()
+
     encoder.train(False)
     decoder.train(False)
 
@@ -124,7 +128,7 @@ attn_decoder1 = None
 
 import os.path
 
-encoder1 = EncoderRNN(input_lang.n_words, hidden_size)
+encoder1 = EncoderRNN(input_lang.n_words, hidden_size, embed_size)
 attn_decoder1 = AttnDecoderRNN("general", hidden_size, output_lang.n_words)
 
 if not os.path.isfile("encoder_state.pt"):
@@ -137,8 +141,14 @@ if not os.path.isfile("encoder_state.pt"):
     torch.save(encoder1.state_dict(), "encoder_state.pt")
     torch.save(attn_decoder1.state_dict(), "attn_decoder_state.pt")
 else:
-    encoder1.load_state_dict(torch.load("encoder_state.pt", map_location=lambda storage, loc: storage))
-    attn_decoder1.load_state_dict(torch.load("attn_decoder_state.pt", map_location=lambda storage, loc: storage))
+    if use_cuda:
+        encoder1 = encoder1.cuda()
+        attn_decoder1 = attn_decoder1.cuda()
+        encoder1.load_state_dict(torch.load("encoder_state.pt"))
+        attn_decoder1.load_state_dict(torch.load("attn_decoder_state.pt"))
+    else:
+        encoder1.load_state_dict(torch.load("encoder_state.pt", map_location=lambda storage, loc: storage))
+        attn_decoder1.load_state_dict(torch.load("attn_decoder_state.pt", map_location=lambda storage, loc: storage))
 
 evaluateRandomly(encoder1, attn_decoder1)
 

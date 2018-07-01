@@ -1,13 +1,7 @@
 from collections import OrderedDict
 import unicodedata
 import re
-
-PAD_token = 0
-SOS_token = 1
-EOS_token = 2
-
-MIN_LENGTH = 3
-MAX_LENGTH = 25
+from hp import PAD_token, SOS_token, EOS_token, MIN_LENGTH, MAX_LENGTH, MIN_COUNT
 
 
 # Turn a Unicode string to plain ASCII, thanks to http://stackoverflow.com/a/518232/2809427
@@ -73,6 +67,25 @@ class Lang:
             self.index_word(word)
 
 
+class DateConverterLoader:
+    def load(self):
+        import string
+        import random
+
+        input_lang = Lang("input")
+        output_lang = Lang("output")
+        pairs = []
+
+        for _ in range(10000):
+            inp = ' '.join(random.choices(string.ascii_lowercase, k=5))
+            out = ' '.join([s.upper() for s in inp[:3]])
+            input_lang.index_words(inp)
+            output_lang.index_words(out)
+            pairs.append([inp, out])
+
+        return input_lang, output_lang, pairs
+
+
 class LanguagePairLoader:
     def __init__(self, source_lang, target_lang):
         self.source_lang = source_lang
@@ -80,8 +93,6 @@ class LanguagePairLoader:
 
     def load(self):
         input_lang, output_lang, pairs = self.prepare_data(True)
-
-        MIN_COUNT = 3
 
         input_lang.trim(MIN_COUNT)
         output_lang.trim(MIN_COUNT)
