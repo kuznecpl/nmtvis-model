@@ -3,8 +3,8 @@ import torch.nn as nn
 from torch.autograd import Variable
 
 MAX_LENGTH = 10
-SOS_token = 0
-EOS_token = 1
+SOS_token = 1
+EOS_token = 2
 
 
 class Hypothesis:
@@ -50,17 +50,15 @@ class BeamSearch:
         # len(latest_tokens) x self.beam_size)
         topk_ids = [[0 for _ in range(self.beam_size)] for _ in range(len(latest_tokens))]
         topk_log_probs = [[0 for _ in range(self.beam_size)] for _ in range(len(latest_tokens))]
-        new_states = [None] * len(states)
-        attns = [None] * len(states)
+        new_states = [None for _ in range(len(states))]
+        attns = [None for _ in range(len(states))]
 
         for token, state, i in zip(latest_tokens, states, range(len(latest_tokens))):
-            decoder_input = Variable(torch.LongTensor([[token]]))
+            decoder_input = Variable(torch.LongTensor([token]), volatile=True)
 
             attention_override = self.attention_override if self.partial == partials[i] else None
 
-            print("Partial")
-            print(self.partial)
-            print(partials[i])
+            print("Hidden {}".format(state.data.numpy().tolist()[0][0][:3]))
             decoder_output, decoder_hidden, decoder_attention = self.decoder(decoder_input,
                                                                              state,
                                                                              self.encoder_outputs,
@@ -70,8 +68,17 @@ class BeamSearch:
             topk_v, topk_i = topk_v.numpy()[0], topk_i.numpy()[0]
 
             topk_ids[i] = topk_i.tolist()
+            print("Token {}".format(self.output_lang.index2word[token]))
+            print("Top: {}".format([self.output_lang.index2word[id] for id in topk_ids[i]]))
+
+            decoder_output = nn.functional.log_softmax(decoder_output)
+            topk_v, topk_i = decoder_output.data.topk(self.beam_size)
+            topk_v, topk_i = topk_v.numpy()[0], topk_i.numpy()[0]
+
             topk_log_probs[i] = topk_v.tolist()
-            new_states[i] = decoder_hidden
+            print("Top: {}".format(topk_log_probs[i]))
+
+            new_states[i] = decoder_hidden.clone()
             attns[i] = decoder_attention.data.numpy().tolist()[0]
 
         return topk_ids, topk_log_probs, new_states, attns
@@ -81,8 +88,7 @@ class BeamSearch:
 
     def search(self):
 
-        hyps = [Hypothesis([SOS_token], [0.0], self.decoder_hidden, Variable(torch.zeros(1, self.decoder.hidden_size)))
-                for _ in range(self.beam_size)]
+        hyps = [Hypothesis([SOS_token], [0.0], self.decoder_hidden.clone()) for _ in range(self.beam_size)]
         result = []
 
         steps = 0
@@ -113,16 +119,22 @@ class BeamSearch:
                     hyps.append(h)
                 if len(hyps) == self.beam_size or len(result) == self.beam_size:
                     break
-            print(hyps)
+            print(
+                [[(self.output_lang.index2word[token], token, h.log_probs[i]) for i, token in enumerate(h.tokens)] for h
+                 in
+                 hyps])
             steps += 1
 
-        return self._best_hyps(result)
+        return self._best_hyps(result, normalize=True)
 
-    def _best_hyps(self, hyps):
+    def _best_hyps(self, hyps, normalize=False):
         """Sort the hyps based on log probs and length.
         Args:
           hyps: A list of hypothesis.
         Returns:
           hyps: A list of sorted hypothesis in reverse log_prob order.
         """
-        return sorted(hyps, key=lambda h: h.log_prob, reverse=True)
+        if normalize:
+            return sorted(hyps, key=lambda h: h.log_prob / len(h.tokens), reverse=True)
+        else:
+            return sorted(hyps, key=lambda h: h.log_probs[-1], reverse=True)

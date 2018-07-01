@@ -57,11 +57,7 @@ class Attn(nn.Module):
         if use_cuda:
             attn_energies = attn_energies.cuda()
 
-        # For each batch of encoder outputs
-        for b in range(this_batch_size):
-            # Calculate energy for each encoder output
-            for i in range(max_len):
-                attn_energies[b, i] = self.score(hidden[:, b], encoder_outputs[i, b].unsqueeze(0))
+        attn_energies = self.score(hidden, encoder_outputs)
 
         # Normalize energies to weights in range 0 to 1, resize to 1 x B x S
         return F.softmax(attn_energies).unsqueeze(1)
@@ -74,9 +70,8 @@ class Attn(nn.Module):
 
         elif self.method == 'general':
             energy = self.attn(encoder_output)
-            energy = hidden.dot(energy)
-            return energy
-
+            energy = hidden.permute([1, 0, 2]).bmm(energy.permute([1, 2, 0]))
+            return energy.squeeze(1)
         elif self.method == 'concat':
             energy = self.attn(torch.cat((hidden, encoder_output), 1))
             energy = self.v.dot(energy)
