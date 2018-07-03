@@ -4,6 +4,12 @@ import torch
 import torch.nn as nn
 from torch.autograd import Variable
 
+import sys
+
+sys.path.insert(0, './myseq2seq')
+for p in sys.path:
+    print(p)
+
 from models import AttnDecoderRNN, EncoderRNN
 from beam_search import BeamSearch
 
@@ -14,8 +20,8 @@ from train import train_iters
 
 use_cuda = torch.cuda.is_available()
 
-#loader = LanguagePairLoader("eng", "de")
-loader = DateConverterLoader()
+loader = LanguagePairLoader("eng", "de")
+# loader = DateConverterLoader()
 input_lang, output_lang, pairs = loader.load()
 
 print(random.choice(pairs))
@@ -87,7 +93,8 @@ def evaluate(encoder, decoder, input_seq, max_length=MAX_LENGTH):
     return decoded_words, decoder_attentions[:di + 1, :len(encoder_outputs)]
 
 
-def beamSearch(encoder, decoder, input_seq, beam_size=3, attention_override=None, partial=None, max_length=MAX_LENGTH):
+def beamSearch(encoder, decoder, input_seq, beam_size=3, attentionOverrideMap=None, correctionMap=None,
+               max_length=MAX_LENGTH):
     input_seqs = [indexes_from_sentence(input_lang, input_seq)]
     input_lengths = [len(seq) for seq in input_seqs]
     input_batches = Variable(torch.LongTensor(input_seqs), volatile=True).transpose(0, 1)
@@ -102,8 +109,8 @@ def beamSearch(encoder, decoder, input_seq, beam_size=3, attention_override=None
 
     decoder_hidden = encoder_hidden[:decoder.n_layers]
 
-    beam_search = BeamSearch(decoder, encoder_outputs, decoder_hidden, output_lang, beam_size, attention_override,
-                             partial)
+    beam_search = BeamSearch(decoder, encoder_outputs, decoder_hidden, output_lang, beam_size, attentionOverrideMap,
+                             correctionMap)
     result = beam_search.search()
 
     encoder.train(True)
@@ -136,7 +143,7 @@ if not os.path.isfile("encoder_state.pt"):
         encoder1 = encoder1.cuda()
         attn_decoder1 = attn_decoder1.cuda()
 
-    train_iters(encoder1, attn_decoder1, input_lang, output_lang, pairs, n_epochs=n_epochs)
+    train_iters(encoder1, attn_decoder1, input_lang, output_lang, pairs, n_epochs=n_epochs, batch_size=batch_size)
 
     torch.save(encoder1.state_dict(), "encoder_state.pt")
     torch.save(attn_decoder1.state_dict(), "attn_decoder_state.pt")
@@ -154,13 +161,14 @@ evaluateRandomly(encoder1, attn_decoder1)
 
 
 class Translation:
-    def __init__(self, words=None, log_probs=None, attns=None):
+    def __init__(self, words=None, log_probs=None, attns=None, candidates=None):
         self.words = words
         self.log_probs = log_probs
         self.attns = attns
+        self.candidates = candidates
 
     def slice(self):
-        return Translation(self.words[1:], self.log_probs[1:], self.attns[1:])
+        return Translation(self.words[1:], self.log_probs[1:], self.attns[1:], self.candidates[1:])
 
     @classmethod
     def from_hypothesis(cls, hypothesis):
@@ -169,12 +177,14 @@ class Translation:
         translation.words = [output_lang.index2word[token] for token in hypothesis.tokens]
         translation.log_probs = hypothesis.log_probs
         translation.attns = hypothesis.attns
+        print("Candidates {}".format(hypothesis.candidates))
+        translation.candidates = hypothesis.candidates
 
         return translation
 
 
-def translate(sentence, beam_size=3, attention_override=None, partial=None):
+def translate(sentence, beam_size=3, attentionOverrideMap=None, correctionMap=None):
     words, attention = evaluate(encoder1, attn_decoder1, sentence)
-    hyps = beamSearch(encoder1, attn_decoder1, sentence, beam_size, attention_override, partial)
+    hyps = beamSearch(encoder1, attn_decoder1, sentence, beam_size, attentionOverrideMap, correctionMap)
 
     return words, attention, [Translation.from_hypothesis(h) for h in hyps]

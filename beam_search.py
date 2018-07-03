@@ -8,11 +8,13 @@ EOS_token = 2
 
 
 class Hypothesis:
-    def __init__(self, tokens, log_probs, state, attns=None):
+    def __init__(self, tokens, log_probs, state, attns=None, candidates=None):
         self.tokens = tokens
         self.log_probs = log_probs
         self.state = state
         self.attns = [[]] if attns is None else attns
+        # candidate tokens at each search step
+        self.candidates = candidates
 
     @property
     def latest_token(self):
@@ -22,9 +24,9 @@ class Hypothesis:
     def log_prob(self):
         return sum(self.log_probs)
 
-    def extend(self, token, new_log_prob, new_state, attn):
+    def extend(self, token, new_log_prob, new_state, attn, candidates):
         return Hypothesis(self.tokens + [token], self.log_probs + [new_log_prob], new_state,
-                          self.attns + [attn])
+                          self.attns + [attn], self.candidates + [candidates])
 
     def __str__(self):
         return ('Hypothesis(log prob = %.4f, tokens = %s)' % (self.log_prob, self.tokens))
@@ -35,15 +37,18 @@ class Hypothesis:
 
 class BeamSearch:
     def __init__(self, decoder, encoder_outputs, decoder_hidden, output_lang,
-                 beam_size=3, attention_override=None, partial=None, max_length=MAX_LENGTH):
+                 beam_size=3, attentionOverrideMap=None, correctionMap=None, max_length=MAX_LENGTH):
         self.decoder = decoder
         self.encoder_outputs = encoder_outputs
         self.decoder_hidden = decoder_hidden
         self.beam_size = beam_size
         self.max_length = MAX_LENGTH
         self.output_lang = output_lang
-        self.attention_override = attention_override
-        self.partial = partial
+        self.attention_override_map = attentionOverrideMap
+        self.correction_map = correctionMap
+
+        print("Attention Override:\n {}".format(attentionOverrideMap))
+        print("Correction Map:\n {}".format(correctionMap))
 
     def decode_topk(self, latest_tokens, states, partials):
 
@@ -56,13 +61,21 @@ class BeamSearch:
         for token, state, i in zip(latest_tokens, states, range(len(latest_tokens))):
             decoder_input = Variable(torch.LongTensor([token]), volatile=True)
 
-            attention_override = self.attention_override if self.partial == partials[i] else None
+            attention_override = None
+            if self.attention_override_map:
+                if partials[i] in self.attention_override_map:
+                    attention_override = self.attention_override_map[partials[i]]
 
             print("Hidden {}".format(state.data.numpy().tolist()[0][0][:3]))
             decoder_output, decoder_hidden, decoder_attention = self.decoder(decoder_input,
                                                                              state,
                                                                              self.encoder_outputs,
                                                                              attention_override)
+
+            if self.correction_map and partials[i] in self.correction_map:
+                print("Corrected {} for partial= {}".format(self.correction_map[partials[i]], partials[i]))
+                idx = self.output_lang.word2index[self.correction_map[partials[i]]]
+                decoder_output.data[0][idx] = 100
 
             topk_v, topk_i = decoder_output.data.topk(self.beam_size)
             topk_v, topk_i = topk_v.numpy()[0], topk_i.numpy()[0]
@@ -88,7 +101,7 @@ class BeamSearch:
 
     def search(self):
 
-        hyps = [Hypothesis([SOS_token], [0.0], self.decoder_hidden.clone()) for _ in range(self.beam_size)]
+        hyps = [Hypothesis([SOS_token], [0.0], self.decoder_hidden.clone(), None, [[]]) for _ in range(self.beam_size)]
         result = []
 
         steps = 0
@@ -107,7 +120,10 @@ class BeamSearch:
                 h, ns, attn = hyps[i], new_states[i], attns[i]
 
                 for j in range(self.beam_size):
-                    all_hyps.append(h.extend(topk_ids[i][j], topk_log_probs[i][j], ns, attn))
+                    candidates = [self.output_lang.index2word[c] for c in (topk_ids[i][:j] + topk_ids[i][j + 1:])]
+                    print(candidates)
+                    all_hyps.append(
+                        h.extend(topk_ids[i][j], topk_log_probs[i][j], ns, attn, candidates))
 
             # Filter
             hyps = []

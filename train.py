@@ -7,7 +7,7 @@ from hp import PAD_token, SOS_token, EOS_token, MIN_LENGTH, MAX_LENGTH
 from masked_cross_entropy import *
 import random
 import math
-from hp import teacher_forcing_ratio, clip
+from hp import teacher_forcing_ratio, clip, batch_size
 
 use_cuda = torch.cuda.is_available()
 
@@ -19,7 +19,7 @@ def pad_seq(seq, max_length):
 
 
 def train(input_batches, input_lengths, target_batches, target_lengths, encoder, decoder, encoder_optimizer,
-          decoder_optimizer, criterion, max_length=MAX_LENGTH, batch_size=50):
+          decoder_optimizer, criterion, max_length=MAX_LENGTH, batch_size=batch_size):
     # Zero gradients of both optimizers
     encoder_optimizer.zero_grad()
     decoder_optimizer.zero_grad()
@@ -92,7 +92,7 @@ def train_iters(encoder, decoder, input_lang, output_lang, pairs, n_epochs=50000
         loss, ec, dc = train(
             input_batches, input_lengths, target_batches, target_lengths,
             encoder, decoder,
-            encoder_optimizer, decoder_optimizer, criterion
+            encoder_optimizer, decoder_optimizer, criterion, batch_size=batch_size
         )
 
         # Keep track of loss

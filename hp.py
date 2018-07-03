@@ -11,5 +11,5 @@ clip = 5.0
 
 hidden_size = 512
 embed_size = 256
-batch_size = 50
-n_epochs = 1000
+batch_size = 1
+n_epochs = 10000

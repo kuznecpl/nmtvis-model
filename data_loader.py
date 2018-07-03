@@ -77,8 +77,11 @@ class DateConverterLoader:
         pairs = []
 
         for _ in range(10000):
-            inp = ' '.join(random.choices(string.ascii_lowercase, k=5))
-            out = ' '.join([s.upper() for s in inp[:3]])
+            inp = [random.choice(string.ascii_lowercase) for _ in range(random.randint(3, 10))]
+            out = [s.upper() for s in inp[:3]]
+
+            inp = " ".join(inp)
+            out = " ".join(out)
             input_lang.index_words(inp)
             output_lang.index_words(out)
             pairs.append([inp, out])
