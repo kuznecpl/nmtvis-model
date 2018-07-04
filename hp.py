@@ -10,8 +10,8 @@ teacher_forcing_ratio = 0.5
 clip = 5.0
 learning_rate = 0.0001
 
-hidden_size = 512
-embed_size = 256
-batch_size = 50
-n_epochs = 20000
-n_layers = 3
+hidden_size = 32
+embed_size = 32
+batch_size = 1
+n_epochs = 10
+n_layers = 2
