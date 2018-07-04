@@ -99,7 +99,7 @@ def train_iters(encoder, decoder, input_lang, output_lang, pairs, n_epochs=50000
         batch_it = batch(pairs, n=batch_size)
         num_iters = math.ceil(len(pairs) / batch_size)
 
-        for i in range(num_iters):
+        for i in range(1, num_iters + 1):
 
             # Get training data for this cycle
             input_batches, input_lengths, target_batches, target_lengths = next_batch(input_lang, output_lang, batch_it,
@@ -119,18 +119,20 @@ def train_iters(encoder, decoder, input_lang, output_lang, pairs, n_epochs=50000
             if i % print_every == 0:
                 print_loss_avg = print_loss_total / print_every
                 print_loss_total = 0
-                print_summary = '%s (%d %d%% %d%%) %.4f' % (
-                    time_since(start, epoch / n_epochs), epoch, epoch / n_epochs * 100, i / num_iters * 100,
-                    print_loss_avg)
+                print_summary = '%s (Epoch %d %d%% Iter %d %d%%) %.4f' % (
+                    time_since(start, (epoch * i) / (n_epochs * num_iters), epoch, epoch / n_epochs * 100, i,
+                               i / num_iters * 100,
+                               print_loss_avg)
                 print(print_summary)
 
-            if epoch % evaluate_every == 0:
-                pass
-                # evaluate_randomly()
+                if epoch % evaluate_every == 0:
+                    pass
+                    # evaluate_randomly()
 
 
 def batch(iterable, n=1):
     l = len(iterable)
+    random.shuffle(iterable)
     for ndx in range(0, l, n):
         yield iterable[ndx:min(ndx + n, l)]
 
