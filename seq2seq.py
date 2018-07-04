@@ -136,7 +136,7 @@ attn_decoder1 = None
 import os.path
 
 encoder1 = EncoderRNN(input_lang.n_words, hidden_size, embed_size)
-attn_decoder1 = AttnDecoderRNN("general", hidden_size, output_lang.n_words)
+attn_decoder1 = AttnDecoderRNN("dot", hidden_size, output_lang.n_words)
 
 if not os.path.isfile("encoder_state.pt"):
     if use_cuda:
@@ -177,7 +177,6 @@ class Translation:
         translation.words = [output_lang.index2word[token] for token in hypothesis.tokens]
         translation.log_probs = hypothesis.log_probs
         translation.attns = hypothesis.attns
-        print("Candidates {}".format(hypothesis.candidates))
         translation.candidates = hypothesis.candidates
 
         return translation
@@ -188,3 +187,78 @@ def translate(sentence, beam_size=3, attentionOverrideMap=None, correctionMap=No
     hyps = beamSearch(encoder1, attn_decoder1, sentence, beam_size, attentionOverrideMap, correctionMap)
 
     return words, attention, [Translation.from_hypothesis(h) for h in hyps]
+
+
+class Seq2SeqModel:
+    def __init__(self, encoder, decoder):
+        self.encoder = encoder
+        self.decoder = decoder
+
+    def evaluate(self, sentence, max_length=MAX_LENGTH):
+        input_seqs = [indexes_from_sentence(input_lang, sentence)]
+        input_lengths = [len(seq) for seq in input_seqs]
+        input_batches = Variable(torch.LongTensor(input_seqs), volatile=True).transpose(0, 1)
+
+        if use_cuda:
+            input_batches = input_batches.cuda()
+
+        # Set to not-training mode to disable dropout
+        self.encoder.train(False)
+        self.decoder.train(False)
+
+        # Run through encoder
+        encoder_outputs, encoder_hidden = self.encoder(input_batches, input_lengths, None)
+
+        # Create starting vectors for decoder
+        decoder_input = Variable(torch.LongTensor([SOS_token]), volatile=True)  # SOS
+        decoder_hidden = encoder_hidden[:self.decoder.n_layers]  # Use last (forward) hidden state from encoder
+
+        if use_cuda:
+            decoder_input = decoder_input.cuda()
+
+        # Store output words and attention states
+        decoded_words = []
+        decoder_attentions = torch.zeros(max_length + 1, max_length + 1)
+
+        # Run through decoder
+        for di in range(max_length):
+
+            decoder_output, decoder_hidden, decoder_attention = self.decoder(
+                decoder_input, decoder_hidden, encoder_outputs
+            )
+            decoder_attentions[di, :decoder_attention.size(2)] += decoder_attention.squeeze(0).squeeze(0).cpu().data
+
+            # Choose top word from output
+            topv, topi = decoder_output.data.topk(1)
+            ni = topi[0][0].item()
+            if ni == EOS_token:
+                decoded_words.append('<EOS>')
+                break
+            else:
+                decoded_words.append(output_lang.index2word[ni])
+
+            log_output = nn.functional.log_softmax(decoder_output)
+            topv, topi = log_output.data.topk(1)
+            ni = topi[0][0].item()
+            log_prob = topv[0][0].item()
+            print("Next decoded word")
+            print("{} prob: {}".format(output_lang.index2word[ni], log_prob))
+
+            # Next input is chosen word
+            decoder_input = Variable(torch.LongTensor([ni]))
+            if use_cuda: decoder_input = decoder_input.cuda()
+
+        # Set back to training mode
+        self.encoder.train(True)
+        self.decoder.train(True)
+
+        return decoded_words, decoder_attentions[:di + 1, :len(encoder_outputs)]
+
+    def translate(self, sentence, beam_size=3, attention_override_map=None, correction_map=None):
+        words, attention = self.evaluate(sentence)
+        hyps = beamSearch(self.encoder, self.decoder, sentence, beam_size, attention_override_map, correction_map)
+
+        return words, attention, [Translation.from_hypothesis(h) for h in hyps]
+
+
+seq2seq_model = Seq2SeqModel(encoder1, attn_decoder1)

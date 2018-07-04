@@ -3,13 +3,13 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.autograd import Variable
 
-from hp import MAX_LENGTH
+from hp import MAX_LENGTH, n_layers
 
 use_cuda = torch.cuda.is_available()
 
 
 class EncoderRNN(nn.Module):
-    def __init__(self, input_size, hidden_size, embed_size, n_layers=3, dropout=0.1):
+    def __init__(self, input_size, hidden_size, embed_size, n_layers=n_layers, dropout=0.1):
         super(EncoderRNN, self).__init__()
 
         self.input_size = input_size
@@ -66,27 +66,28 @@ class Attn(nn.Module):
 
         if self.method == 'dot':
             energy = hidden.permute([1, 0, 2]).bmm(encoder_output.permute([1, 2, 0]))
-            return energy
+            return energy.squeeze(1)
 
         elif self.method == 'general':
             energy = self.attn(encoder_output)
             energy = hidden.permute([1, 0, 2]).bmm(energy.permute([1, 2, 0]))  # B x 1 x H bmm B x H x S => B x 1 x S
             return energy.squeeze(1)  # B X S
-        
+
         elif self.method == 'concat':
             S = encoder_output.size(0)
             B = encoder_output.size(1)
 
             hidden = hidden.repeat(S, 1, 1).transpose(0, 1)  # 1 x B x H => B x S x H
-            concat = torch.cat((hidden, encoder_output.transpose(0, 1)), 1)  # B x S x 2H
-            energy = F.tanh(self.attn(concat)).transpose(2, 1)  # B x H x S
+            concat = torch.cat((hidden, encoder_output.transpose(0, 1)), 2)  # B x S x 2H
+
+            energy = self.attn(concat).transpose(2, 1)  # B x H x S
             v = self.v.repeat(B, 1).unsqueeze(1)
             energy = torch.bmm(v, energy)
-            return energy
+            return energy.squeeze(1)
 
 
 class AttnDecoderRNN(nn.Module):
-    def __init__(self, attn_model, hidden_size, output_size, n_layers=3, dropout=0.1):
+    def __init__(self, attn_model, hidden_size, output_size, n_layers=n_layers, dropout=0.1):
         super(AttnDecoderRNN, self).__init__()
 
         # Keep for reference

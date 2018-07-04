@@ -13,3 +13,4 @@ hidden_size = 512
 embed_size = 256
 batch_size = 1
 n_epochs = 10000
+n_layers = 3

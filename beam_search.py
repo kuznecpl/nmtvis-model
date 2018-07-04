@@ -66,7 +66,6 @@ class BeamSearch:
                 if partials[i] in self.attention_override_map:
                     attention_override = self.attention_override_map[partials[i]]
 
-            print("Hidden {}".format(state.data.numpy().tolist()[0][0][:3]))
             decoder_output, decoder_hidden, decoder_attention = self.decoder(decoder_input,
                                                                              state,
                                                                              self.encoder_outputs,
@@ -81,15 +80,12 @@ class BeamSearch:
             topk_v, topk_i = topk_v.numpy()[0], topk_i.numpy()[0]
 
             topk_ids[i] = topk_i.tolist()
-            print("Token {}".format(self.output_lang.index2word[token]))
-            print("Top: {}".format([self.output_lang.index2word[id] for id in topk_ids[i]]))
 
             decoder_output = nn.functional.log_softmax(decoder_output)
             topk_v, topk_i = decoder_output.data.topk(self.beam_size)
             topk_v, topk_i = topk_v.numpy()[0], topk_i.numpy()[0]
 
             topk_log_probs[i] = topk_v.tolist()
-            print("Top: {}".format(topk_log_probs[i]))
 
             new_states[i] = decoder_hidden.clone()
             attns[i] = decoder_attention.data.numpy().tolist()[0]
@@ -106,6 +102,7 @@ class BeamSearch:
 
         steps = 0
 
+        discarded_hyps = []
         while steps < self.max_length and len(result) < self.beam_size:
             latest_tokens = [hyp.latest_token for hyp in hyps]
             states = [hyp.state for hyp in hyps]
@@ -121,19 +118,24 @@ class BeamSearch:
 
                 for j in range(self.beam_size):
                     candidates = [self.output_lang.index2word[c] for c in (topk_ids[i][:j] + topk_ids[i][j + 1:])]
-                    print(candidates)
+
                     all_hyps.append(
                         h.extend(topk_ids[i][j], topk_log_probs[i][j], ns, attn, candidates))
 
             # Filter
             hyps = []
 
+            idx = 0
             for h in self._best_hyps(all_hyps):
+                idx += 1
                 if h.latest_token == EOS_token:
                     result.append(h)
                 else:
                     hyps.append(h)
+
+                    print(" ".join([self.output_lang.index2word[i] for i in h.tokens]))
                 if len(hyps) == self.beam_size or len(result) == self.beam_size:
+                    discarded_hyps.extend(all_hyps[idx:])
                     break
             print(
                 [[(self.output_lang.index2word[token], token, h.log_probs[i]) for i, token in enumerate(h.tokens)] for h
@@ -141,7 +143,7 @@ class BeamSearch:
                  hyps])
             steps += 1
 
-        return self._best_hyps(result, normalize=True)
+        return self._best_hyps(result, normalize=True) + discarded_hyps
 
     def _best_hyps(self, hyps, normalize=False):
         """Sort the hyps based on log probs and length.
