@@ -7,7 +7,7 @@ from hp import PAD_token, SOS_token, EOS_token, MIN_LENGTH, MAX_LENGTH
 from masked_cross_entropy import *
 import random
 import math
-from hp import teacher_forcing_ratio, clip, batch_size
+from hp import teacher_forcing_ratio, clip, batch_size, learning_rate
 
 use_cuda = torch.cuda.is_available()
 
@@ -16,6 +16,14 @@ use_cuda = torch.cuda.is_available()
 def pad_seq(seq, max_length):
     seq += [PAD_token for i in range(max_length - len(seq))]
     return seq
+
+
+def adjust_learning_rate(optimizer, epoch):
+    """Sets the learning rate to the initial LR decayed by 10 every 30 epochs"""
+    lr = learning_rate * (0.1 ** (epoch // 5000))
+    print("Adjusted learning rate to {}".format(lr))
+    for param_group in optimizer.param_groups:
+        param_group['lr'] = lr
 
 
 def train(input_batches, input_lengths, target_batches, target_lengths, encoder, decoder, encoder_optimizer,
@@ -69,7 +77,7 @@ def train(input_batches, input_lengths, target_batches, target_lengths, encoder,
 
 
 def train_iters(encoder, decoder, input_lang, output_lang, pairs, n_epochs=50000, print_every=100, evaluate_every=100,
-                learning_rate=0.0001,
+                learning_rate=learning_rate,
                 decoder_learning_ratio=5.0, batch_size=50):
     # Initialize optimizers and criterion
     encoder_optimizer = optim.Adam(encoder.parameters(), lr=learning_rate)
@@ -84,6 +92,10 @@ def train_iters(encoder, decoder, input_lang, output_lang, pairs, n_epochs=50000
     print("Starting training for n_epochs={} lr={}, batch_size={}".format(n_epochs, learning_rate, batch_size))
 
     for epoch in range(1, n_epochs + 1):
+
+        if epoch % 1000 == 0:
+            adjust_learning_rate(decoder_optimizer, epoch)
+
         # Get training data for this cycle
         input_batches, input_lengths, target_batches, target_lengths = random_batch(input_lang, output_lang, pairs,
                                                                                     batch_size)
