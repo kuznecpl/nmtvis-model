@@ -1,7 +1,7 @@
 from collections import OrderedDict
 import unicodedata
 import re
-from hp import PAD_token, SOS_token, EOS_token, MIN_LENGTH, MAX_LENGTH, MIN_COUNT
+from hp import PAD_token, SOS_token, EOS_token, UNK_token, MIN_LENGTH, MAX_LENGTH, MIN_COUNT
 
 
 # Turn a Unicode string to plain ASCII, thanks to http://stackoverflow.com/a/518232/2809427
@@ -20,13 +20,18 @@ def normalize_string(s):
     return s
 
 
+class MyDict(OrderedDict):
+    def __missing__(self, key):
+        return UNK_token
+
+
 class Lang:
     def __init__(self, name):
         self.name = name
         self.trimmed = False
-        self.word2index = OrderedDict()
+        self.word2index = MyDict()
         self.word2count = OrderedDict()
-        self.index2word = OrderedDict({0: "PAD", 1: "SOS", 2: "EOS"})
+        self.index2word = OrderedDict({PAD_token: "PAD", SOS_token: "SOS", EOS_token: "EOS", UNK_token: "UNK"})
         self.n_words = 3  # Count default tokens
 
     def index_words(self, sentence):
@@ -58,9 +63,9 @@ class Lang:
         ))
 
         # Reinitialize dictionaries
-        self.word2index = OrderedDict()
+        self.word2index = MyDict()
         self.word2count = OrderedDict()
-        self.index2word = OrderedDict({0: "PAD", 1: "SOS", 2: "EOS"})
+        self.index2word = OrderedDict({PAD_token: "PAD", SOS_token: "SOS", EOS_token: "EOS", UNK_token: "UNK"})
         self.n_words = 3  # Count default tokens
 
         for word in keep_words:
@@ -100,7 +105,7 @@ class LanguagePairLoader:
         input_lang.trim(MIN_COUNT)
         output_lang.trim(MIN_COUNT)
 
-        pairs = self.filter(input_lang, output_lang, pairs)
+        #pairs = self.filter(input_lang, output_lang, pairs)
 
         return input_lang, output_lang, pairs
 

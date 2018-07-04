@@ -143,7 +143,7 @@ class BeamSearch:
                  hyps])
             steps += 1
 
-        return self._best_hyps(result, normalize=True) + discarded_hyps
+        return self._best_hyps(result, normalize=True)
 
     def _best_hyps(self, hyps, normalize=False):
         """Sort the hyps based on log probs and length.

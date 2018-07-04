@@ -120,9 +120,9 @@ def train_iters(encoder, decoder, input_lang, output_lang, pairs, n_epochs=50000
                 print_loss_avg = print_loss_total / print_every
                 print_loss_total = 0
                 print_summary = '%s (Epoch %d %d%% Iter %d %d%%) %.4f' % (
-                    time_since(start, (epoch * i) / (n_epochs * num_iters), epoch, epoch / n_epochs * 100, i,
-                               i / num_iters * 100,
-                               print_loss_avg)
+                    time_since(start, (epoch * i) / (n_epochs * num_iters)), epoch, epoch / n_epochs * 100, i,
+                    i / num_iters * 100,
+                    print_loss_avg)
                 print(print_summary)
 
                 if epoch % evaluate_every == 0:
