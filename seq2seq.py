@@ -20,8 +20,8 @@ from train import train_iters
 
 use_cuda = torch.cuda.is_available()
 
-# loader = LanguagePairLoader("eng", "de")
-loader = DateConverterLoader()
+loader = LanguagePairLoader("de", "en")
+#loader = DateConverterLoader()
 input_lang, output_lang, pairs = loader.load()
 
 print(random.choice(pairs))

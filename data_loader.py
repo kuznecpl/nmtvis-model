@@ -32,7 +32,7 @@ class Lang:
         self.word2index = MyDict()
         self.word2count = OrderedDict()
         self.index2word = OrderedDict({PAD_token: "PAD", SOS_token: "SOS", EOS_token: "EOS", UNK_token: "UNK"})
-        self.n_words = 3  # Count default tokens
+        self.n_words = 4  # Count default tokens
 
     def index_words(self, sentence):
         for word in sentence.split(' '):
@@ -100,20 +100,20 @@ class LanguagePairLoader:
         self.target_lang = target_lang
 
     def load(self):
-        input_lang, output_lang, pairs = self.prepare_data(True)
+        input_lang, output_lang, pairs = self.prepare_data()
 
         input_lang.trim(MIN_COUNT)
         output_lang.trim(MIN_COUNT)
 
-        #pairs = self.filter(input_lang, output_lang, pairs)
+        # pairs = self.filter(input_lang, output_lang, pairs)
 
         return input_lang, output_lang, pairs
 
     def filter_pairs(self, pairs):
         filtered_pairs = []
         for pair in pairs:
-            if len(pair[0]) >= MIN_LENGTH and len(pair[0]) <= MAX_LENGTH \
-                    and len(pair[1]) >= MIN_LENGTH and len(pair[1]) <= MAX_LENGTH:
+            if len(pair[0].split(" ")) >= MIN_LENGTH and len(pair[0].split(" ")) <= MAX_LENGTH \
+                    and len(pair[1].split(" ")) >= MIN_LENGTH and len(pair[1].split(" ")) <= MAX_LENGTH:
                 filtered_pairs.append(pair)
         return filtered_pairs
 
@@ -137,11 +137,14 @@ class LanguagePairLoader:
 
         # Read the file and split into lines
         #     filename = '../data/%s-%s.txt' % (lang1, lang2)
-        filename = '%s-%s.txt' % (self.source_lang, self.target_lang)
-        lines = open(filename).read().strip().split('\n')
+        source_filename = 'iwslt14.tokenized.de-en/train.%s' % (self.source_lang)
+        target_filename = 'iwslt14.tokenized.de-en/train.%s' % (self.target_lang)
+        source_lines = open(source_filename).read().strip().split('\n')
+        target_lines = open(target_filename).read().strip().split('\n')
 
         # Split every line into pairs and normalize
-        pairs = [[normalize_string(s) for s in l.split('\t')] for l in lines]
+        # pairs = [[normalize_string(s) for s in l.split('\t')] for l in lines]
+        pairs = list(zip(source_lines, target_lines))
 
         # Reverse pairs, make Lang instances
         if reverse:
