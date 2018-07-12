@@ -66,7 +66,7 @@ class Lang:
         self.word2index = MyDict()
         self.word2count = OrderedDict()
         self.index2word = OrderedDict({PAD_token: "PAD", SOS_token: "SOS", EOS_token: "EOS", UNK_token: "UNK"})
-        self.n_words = 3  # Count default tokens
+        self.n_words = 4  # Count default tokens
 
         for word in keep_words:
             self.index_word(word)

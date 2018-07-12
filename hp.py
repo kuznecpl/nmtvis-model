@@ -5,14 +5,14 @@ UNK_token = 3
 
 MIN_COUNT = 5
 MIN_LENGTH = 3
-MAX_LENGTH = 30
+MAX_LENGTH = 40
 
 teacher_forcing_ratio = 0.5
 clip = 5.0
-learning_rate = 0.0001
+learning_rate = 0.001
 
-hidden_size = 1000
+hidden_size = 500
 embed_size = 500
-batch_size = 50
-n_epochs = 10
-n_layers = 2
+batch_size = 256
+n_epochs = 20
+n_layers = 1

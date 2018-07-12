@@ -20,7 +20,7 @@ def pad_seq(seq, max_length):
 
 def adjust_learning_rate(optimizer, epoch):
     """Sets the learning rate to the initial LR decayed by 10 every 30 epochs"""
-    lr = learning_rate * (0.1 ** (epoch // 10))
+    lr = learning_rate * (0.1 ** (epoch // 5))
     print("Adjusted learning rate to {}".format(lr))
     for param_group in optimizer.param_groups:
         param_group['lr'] = lr
@@ -82,7 +82,7 @@ def train_iters(encoder, decoder, input_lang, output_lang, pairs, n_epochs=50000
     # Initialize optimizers and criterion
     encoder_optimizer = optim.Adam(encoder.parameters(), lr=learning_rate)
     decoder_optimizer = optim.Adam(decoder.parameters(), lr=learning_rate * decoder_learning_ratio)
-    criterion = nn.CrossEntropyLoss()
+    criterion = nn.CrossEntropyLoss(ignore_index=PAD_token)
 
     start = time.time()
     plot_losses = []
@@ -94,6 +94,10 @@ def train_iters(encoder, decoder, input_lang, output_lang, pairs, n_epochs=50000
     for epoch in range(1, n_epochs + 1):
 
         adjust_learning_rate(decoder_optimizer, epoch)
+
+        if epoch > 1 and epoch % 4 == 0:
+            torch.save(encoder.state_dict(), "encoder_state_epoch_{}.pt".format(epoch - 1))
+            torch.save(decoder.state_dict(), "attn_decoder_state_epoch_{}.pt".format(epoch - 1))
 
         batch_it = batch(pairs, n=batch_size)
         num_iters = math.floor(len(pairs) / batch_size)
