@@ -1,10 +1,7 @@
 import torch
 import torch.nn as nn
 from torch.autograd import Variable
-
-MAX_LENGTH = 10
-SOS_token = 1
-EOS_token = 2
+from hp import MAX_LENGTH, SOS_token, EOS_token
 
 
 class Hypothesis:
@@ -47,9 +44,6 @@ class BeamSearch:
         self.attention_override_map = attentionOverrideMap
         self.correction_map = correctionMap
 
-        print("Attention Override:\n {}".format(attentionOverrideMap))
-        print("Correction Map:\n {}".format(correctionMap))
-
     def decode_topk(self, latest_tokens, states, partials):
 
         # len(latest_tokens) x self.beam_size)
@@ -74,7 +68,7 @@ class BeamSearch:
             if self.correction_map and partials[i] in self.correction_map:
                 print("Corrected {} for partial= {}".format(self.correction_map[partials[i]], partials[i]))
                 idx = self.output_lang.word2index[self.correction_map[partials[i]]]
-                decoder_output.data[0][idx] = 100
+                decoder_output.data[0][idx] = 1000
 
             topk_v, topk_i = decoder_output.data.topk(self.beam_size)
             topk_v, topk_i = topk_v.numpy()[0], topk_i.numpy()[0]
@@ -102,7 +96,7 @@ class BeamSearch:
 
         steps = 0
 
-        discarded_hyps = []
+        # discarded_hyps = []
         while steps < self.max_length and len(result) < self.beam_size:
             latest_tokens = [hyp.latest_token for hyp in hyps]
             states = [hyp.state for hyp in hyps]
@@ -132,17 +126,17 @@ class BeamSearch:
                     result.append(h)
                 else:
                     hyps.append(h)
-
-                    print(" ".join([self.output_lang.index2word[i] for i in h.tokens]))
+                    # print(" ".join([self.output_lang.index2word[i] for i in h.tokens]))
                 if len(hyps) == self.beam_size or len(result) == self.beam_size:
-                    discarded_hyps.extend(all_hyps[idx:])
+                    # discarded_hyps.extend(all_hyps[idx:])
                     break
-            print(
-                [[(self.output_lang.index2word[token], token, h.log_probs[i]) for i, token in enumerate(h.tokens)] for h
-                 in
-                 hyps])
+                    # print(
+                    #   [[(self.output_lang.index2word[token], token, h.log_probs[i]) for i, token in enumerate(h.tokens)] for h
+                    #   in
+                    #  hyps])
             steps += 1
 
+        print("Beam Search found {} hypotheses for beam_size {}".format(len(result), self.beam_size))
         return self._best_hyps(result, normalize=True)
 
     def _best_hyps(self, hyps, normalize=False):

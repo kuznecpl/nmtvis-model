@@ -1,4 +1,5 @@
 import spacy
+import re
 
 nlp = spacy.load("de")
 
@@ -28,13 +29,19 @@ class Document:
         self.filename = filename
         self.content = []
         self.translation_data = []
+        self.scores = []
+
+    def pad_punctuation(self, s):
+        s = re.sub('([.,!?()])', r' \1 ', s)
+        s = re.sub('\s{2,}', ' ', s)
+        return s
 
     def load_content(self):
         with open(UPLOAD_FOLDER + self.filename, "r") as f:
-            content = f.read().replace("\n", "")
+            content = f.read()
             doc = nlp(content)
 
-            self.content = [str(sent) for sent in doc.sents]
+            self.content = [self.pad_punctuation(str(sent)).strip() for sent in doc.sents]
 
         return self.content
 
