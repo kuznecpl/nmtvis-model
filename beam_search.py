@@ -91,7 +91,9 @@ class BeamSearch:
 
     def search(self):
 
-        hyps = [Hypothesis([SOS_token], [0.0], self.decoder_hidden.clone(), None, [[]]) for _ in range(self.beam_size)]
+        start_attn = [[[0 for _ in range(self.encoder_outputs.size(0))]]]
+        hyps = [Hypothesis([SOS_token], [0.0], self.decoder_hidden.clone(), start_attn, [[]]) for _ in
+                range(self.beam_size)]
         result = []
 
         steps = 0

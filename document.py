@@ -22,6 +22,17 @@ def sentence_division_suppresor(doc):
 nlp.add_pipe(sentence_division_suppresor, name='sent_fix', before='parser')
 
 
+class Sentence:
+    def __init__(self, id, source, translation, attention, beam, score):
+        self.id = id
+        self.source = source
+        self.translation = translation
+        self.attention = attention
+        self.beam = beam
+        self.score = score
+        self.corrected = False
+
+
 class Document:
     def __init__(self, id, name, filename):
         self.id = id
@@ -30,6 +41,7 @@ class Document:
         self.content = []
         self.translation_data = []
         self.scores = []
+        self.sentences = []
 
     def pad_punctuation(self, s):
         s = re.sub('([.,!?()])', r' \1 ', s)
@@ -41,7 +53,12 @@ class Document:
             content = f.read()
             doc = nlp(content)
 
-            self.content = [self.pad_punctuation(str(sent)).strip() for sent in doc.sents]
+            self.content = []
+
+            for sent in doc.sents:
+                tokens = nlp(str(sent).lower())
+                tokens = [str(token).strip() for token in tokens]
+                self.content.append(" ".join(tokens))
 
         return self.content
 
