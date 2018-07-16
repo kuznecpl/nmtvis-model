@@ -15,7 +15,7 @@ from models import AttnDecoderRNN, EncoderRNN
 from hp import PAD_token, SOS_token, EOS_token, MIN_LENGTH, MAX_LENGTH, hidden_size, batch_size, n_epochs, embed_size
 from data_loader import LanguagePairLoader, DateConverterLoader
 from models import Seq2SeqModel
-from train import train_iters
+from train import train_iters, eval_bleu
 
 use_cuda = torch.cuda.is_available()
 
@@ -53,7 +53,5 @@ else:
         attn_decoder1.load_state_dict(torch.load("attn_decoder_state.pt", map_location=lambda storage, loc: storage))
 
 seq2seq_model = Seq2SeqModel(encoder1, attn_decoder1, input_lang, output_lang)
-
-from train import eval_bleu
 
 eval_bleu(encoder1, attn_decoder1, input_lang, output_lang, 1)

@@ -98,7 +98,6 @@ class BeamSearch:
 
         steps = 0
 
-        # discarded_hyps = []
         while steps < self.max_length and len(result) < self.beam_size:
             latest_tokens = [hyp.latest_token for hyp in hyps]
             states = [hyp.state for hyp in hyps]
@@ -121,21 +120,13 @@ class BeamSearch:
             # Filter
             hyps = []
 
-            idx = 0
             for h in self._best_hyps(all_hyps):
-                idx += 1
                 if h.latest_token == EOS_token:
                     result.append(h)
                 else:
                     hyps.append(h)
-                    # print(" ".join([self.output_lang.index2word[i] for i in h.tokens]))
                 if len(hyps) == self.beam_size or len(result) == self.beam_size:
-                    # discarded_hyps.extend(all_hyps[idx:])
                     break
-                    # print(
-                    #   [[(self.output_lang.index2word[token], token, h.log_probs[i]) for i, token in enumerate(h.tokens)] for h
-                    #   in
-                    #  hyps])
             steps += 1
 
         print("Beam Search found {} hypotheses for beam_size {}".format(len(result), self.beam_size))

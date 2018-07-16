@@ -137,8 +137,8 @@ class LanguagePairLoader:
 
         # Read the file and split into lines
         #     filename = '../data/%s-%s.txt' % (lang1, lang2)
-        source_filename = 'iwslt14.tokenized.de-en/train.%s' % (self.source_lang)
-        target_filename = 'iwslt14.tokenized.de-en/train.%s' % (self.target_lang)
+        source_filename = 'myseq2seq/iwslt14.tokenized.de-en/train.%s' % (self.source_lang)
+        target_filename = 'myseq2seq/iwslt14.tokenized.de-en/train.%s' % (self.target_lang)
         source_lines = open(source_filename).read().strip().split('\n')
         target_lines = open(target_filename).read().strip().split('\n')
 
