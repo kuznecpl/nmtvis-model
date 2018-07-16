@@ -2,8 +2,9 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.autograd import Variable
+from beam_search import BeamSearch
 
-from hp import MAX_LENGTH, n_layers
+from hp import MAX_LENGTH, n_layers, SOS_token, EOS_token, PAD_token, UNK_token
 
 use_cuda = torch.cuda.is_available()
 
@@ -60,7 +61,7 @@ class Attn(nn.Module):
         attn_energies = self.score(hidden, encoder_outputs)
 
         # Normalize energies to weights in range 0 to 1, resize to 1 x B x S
-        return F.softmax(attn_energies).unsqueeze(1)
+        return F.softmax(attn_energies, dim=1).unsqueeze(1)
 
     def score(self, hidden, encoder_output):
 
@@ -138,3 +139,143 @@ class AttnDecoderRNN(nn.Module):
 
         # Return final output, hidden state, and attention weights (for visualization)
         return output, hidden, attn_weights
+
+
+class Seq2SeqModel:
+    def __init__(self, encoder, decoder, input_lang, output_lang):
+        self.encoder = encoder
+        self.decoder = decoder
+        self.input_lang = input_lang
+        self.output_lang = output_lang
+
+    def evaluate(self, sentence, max_length=MAX_LENGTH):
+        torch.set_grad_enabled(False)
+        input_words = sentence.split(" ") + [EOS_token]
+        input_seqs = [indexes_from_sentence(self.input_lang, sentence)]
+        input_lengths = [len(seq) for seq in input_seqs]
+        input_batches = Variable(torch.LongTensor(input_seqs)).transpose(0, 1)
+
+        if use_cuda:
+            input_batches = input_batches.cuda()
+
+        # Set to not-training mode to disable dropout
+        self.encoder.train(False)
+        self.decoder.train(False)
+
+        # Run through encoder
+        encoder_outputs, encoder_hidden = self.encoder(input_batches, input_lengths, None)
+
+        # Create starting vectors for decoder
+        decoder_input = Variable(torch.LongTensor([SOS_token]))  # SOS
+        decoder_hidden = encoder_hidden[:self.decoder.n_layers]  # Use last (forward) hidden state from encoder
+
+        if use_cuda:
+            decoder_input = decoder_input.cuda()
+
+        # Store output words and attention states
+        decoded_words = []
+        decoder_attentions = torch.zeros(max_length + 1, max_length + 1)
+
+        # Run through decoder
+        for di in range(max_length):
+
+            decoder_output, decoder_hidden, decoder_attention = self.decoder(
+                decoder_input, decoder_hidden, encoder_outputs
+            )
+            decoder_attentions[di, :decoder_attention.size(2)] += decoder_attention.squeeze(0).squeeze(0).cpu().data
+
+            # Choose top word from output
+            topv, topi = decoder_output.data.topk(1)
+            ni = topi[0][0].item()
+            if ni == UNK_token:
+                v, i = decoder_attentions[di, :decoder_attention.size(2)].max(0)
+
+                if v.item() > 0.9 and i.item() < len(input_words):
+                    copy_word_idx = i.item()
+                    copy_word = input_words[copy_word_idx]
+                    decoded_words.append(str(copy_word))
+                else:
+                    decoded_words.append(self.output_lang.index2word[ni])
+            elif ni == EOS_token:
+                decoded_words.append('<EOS>')
+                break
+            else:
+                decoded_words.append(self.output_lang.index2word[ni])
+
+            log_output = nn.functional.log_softmax(decoder_output, dim=1)
+            topv, topi = log_output.data.topk(1)
+            ni = topi[0][0].item()
+            log_prob = topv[0][0].item()
+
+            # Next input is chosen word
+            decoder_input = Variable(torch.LongTensor([ni]))
+            if use_cuda: decoder_input = decoder_input.cuda()
+
+        # Set back to training mode
+        self.encoder.train(True)
+        self.decoder.train(True)
+
+        torch.set_grad_enabled(True)
+        return decoded_words, decoder_attentions[:di + 1, :len(encoder_outputs)]
+
+    def translate(self, sentence, beam_size=3, attention_override_map=None, correction_map=None):
+        words, attention = self.evaluate(sentence)
+        hyps = self.beam_search(sentence, beam_size, attention_override_map, correction_map)
+
+        return words, attention, [Translation.from_hypothesis(h) for h in hyps]
+
+    def beam_search(self, input_seq, beam_size=3, attentionOverrideMap=None, correctionMap=None,
+                    max_length=MAX_LENGTH):
+        torch.set_grad_enabled(False)
+        input_seqs = [indexes_from_sentence(self.input_lang, input_seq)]
+        input_lengths = [len(seq) for seq in input_seqs]
+        input_batches = Variable(torch.LongTensor(input_seqs)).transpose(0, 1)
+
+        if use_cuda:
+            input_batches = input_batches.cuda()
+
+        self.encoder.train(False)
+        self.decoder.train(False)
+
+        encoder_outputs, encoder_hidden = self.encoder(input_batches, input_lengths, None)
+
+        decoder_hidden = encoder_hidden[:self.decoder.n_layers]
+
+        beam_search = BeamSearch(self.decoder, encoder_outputs, decoder_hidden, self.output_lang, beam_size,
+                                 attentionOverrideMap,
+                                 correctionMap)
+        result = beam_search.search()
+
+        self.encoder.train(True)
+        self.decoder.train(True)
+
+        torch.set_grad_enabled(True)
+
+        return result
+
+
+# Return a list of indexes, one for each word in the sentence, plus EOS
+def indexes_from_sentence(lang, sentence):
+    return [lang.word2index[word] for word in sentence.split(' ')] + [EOS_token]
+
+
+class Translation:
+    def __init__(self, words=None, log_probs=None, attns=None, candidates=None):
+        self.words = words
+        self.log_probs = log_probs
+        self.attns = attns
+        self.candidates = candidates
+
+    def slice(self):
+        return Translation(self.words[1:], self.log_probs[1:], self.attns[1:], self.candidates[1:])
+
+    @classmethod
+    def from_hypothesis(cls, hypothesis):
+        translation = Translation()
+
+        translation.words = [output_lang.index2word[token] for token in hypothesis.tokens]
+        translation.log_probs = hypothesis.log_probs
+        translation.attns = hypothesis.attns
+        translation.candidates = hypothesis.candidates
+
+        return translation

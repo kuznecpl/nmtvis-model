@@ -5,6 +5,7 @@ from torch.autograd import Variable
 from torch import optim
 from hp import PAD_token, SOS_token, EOS_token, MIN_LENGTH, MAX_LENGTH
 from masked_cross_entropy import *
+from models import Seq2SeqModel
 import random
 import math
 from hp import teacher_forcing_ratio, clip, batch_size, learning_rate
@@ -26,8 +27,13 @@ def adjust_learning_rate(optimizer, epoch):
         param_group['lr'] = lr
 
 
+def adjust_teacher_forcing(epoch):
+    return teacher_forcing_ratio * (0.5 ** ((epoch - 2) // 1))
+
+
 def train(input_batches, input_lengths, target_batches, target_lengths, encoder, decoder, encoder_optimizer,
-          decoder_optimizer, criterion, max_length=MAX_LENGTH, batch_size=batch_size):
+          decoder_optimizer, criterion, max_length=MAX_LENGTH, batch_size=batch_size,
+          teacher_forcing_ratio=teacher_forcing_ratio):
     # Zero gradients of both optimizers
     encoder_optimizer.zero_grad()
     decoder_optimizer.zero_grad()
@@ -48,32 +54,49 @@ def train(input_batches, input_lengths, target_batches, target_lengths, encoder,
         decoder_input = decoder_input.cuda()
         all_decoder_outputs = all_decoder_outputs.cuda()
 
-    # Run through decoder one time step at a time
-    for t in range(max_target_length):
-        decoder_output, decoder_hidden, decoder_attn = decoder(
-            decoder_input, decoder_hidden, encoder_outputs
-        )
+    teacher_force = random.random() < teacher_forcing_ratio
+    teacher_force = True
 
-        all_decoder_outputs[t] = decoder_output
-        decoder_input = target_batches[t]  # Next input is current target
+    if teacher_force:
+        # Run through decoder one time step at a time
+        for t in range(max_target_length):
+            decoder_output, decoder_hidden, decoder_attn = decoder(
+                decoder_input, decoder_hidden, encoder_outputs
+            )
+            loss += criterion(decoder_output, target_batches[t])
+            all_decoder_outputs[t] = decoder_output
+            decoder_input = target_batches[t]  # Next input is current target
+    else:
+        # Run through decoder one time step at a time
+        for t in range(max_target_length):
+            decoder_output, decoder_hidden, decoder_attn = decoder(
+                decoder_input, decoder_hidden, encoder_outputs
+            )
+
+            all_decoder_outputs[t] = decoder_output
+            v, i = decoder_output.topk(1)
+
+            decoder_input = Variable(i.view(-1))
+            decoder_input = decoder_input.cuda() if use_cuda else decoder_input
+            loss += criterion(decoder_output, target_batches[t])
 
     # Loss calculation and backpropagation
-    loss = masked_cross_entropy(
+    '''loss = masked_cross_entropy(
         all_decoder_outputs.transpose(0, 1).contiguous(),  # -> batch x seq
         target_batches.transpose(0, 1).contiguous(),  # -> batch x seq
         target_lengths
-    )
+    )'''
     loss.backward()
 
     # Clip gradient norms
-    ec = torch.nn.utils.clip_grad_norm(encoder.parameters(), clip)
-    dc = torch.nn.utils.clip_grad_norm(decoder.parameters(), clip)
+    ec = torch.nn.utils.clip_grad_norm_(encoder.parameters(), clip)
+    dc = torch.nn.utils.clip_grad_norm_(decoder.parameters(), clip)
 
     # Update parameters with optimizers
     encoder_optimizer.step()
     decoder_optimizer.step()
 
-    return loss.data[0], ec, dc
+    return loss.item() / max_target_length, ec, dc
 
 
 def train_iters(encoder, decoder, input_lang, output_lang, pairs, n_epochs=50000, print_every=100, evaluate_every=100,
@@ -93,7 +116,11 @@ def train_iters(encoder, decoder, input_lang, output_lang, pairs, n_epochs=50000
 
     for epoch in range(1, n_epochs + 1):
 
-        adjust_learning_rate(decoder_optimizer, epoch)
+        # adjust_learning_rate(decoder_optimizer, epoch)
+        teacher_forcing_ratio = adjust_teacher_forcing(epoch)
+
+        if epoch > 1:
+            eval_bleu(encoder, decoder, input_lang, output_lang, epoch)
 
         if epoch > 1 and epoch % 4 == 0:
             torch.save(encoder.state_dict(), "encoder_state_epoch_{}.pt".format(epoch - 1))
@@ -112,7 +139,8 @@ def train_iters(encoder, decoder, input_lang, output_lang, pairs, n_epochs=50000
             loss, ec, dc = train(
                 input_batches, input_lengths, target_batches, target_lengths,
                 encoder, decoder,
-                encoder_optimizer, decoder_optimizer, criterion, batch_size=batch_size
+                encoder_optimizer, decoder_optimizer, criterion, batch_size=batch_size,
+                teacher_forcing_ratio=teacher_forcing_ratio
             )
 
             # Keep track of loss
@@ -131,6 +159,33 @@ def train_iters(encoder, decoder, input_lang, output_lang, pairs, n_epochs=50000
                 if epoch % evaluate_every == 0:
                     pass
                     # evaluate_randomly()
+
+
+def eval_bleu(encoder, decoder, input_lang, output_lang, epoch):
+    encoder.train(False)
+    decoder.train(False)
+
+    print("Evaluating BLEU")
+    seq2seq = Seq2SeqModel(encoder, decoder, input_lang, output_lang)
+    eval_sentences = []
+
+    with open("./iwslt14.tokenized.de-en/test.bpe.de", "r") as f:
+        for line in f.readlines():
+            eval_sentences.append(line.strip())
+
+    print("Eval sentences {}".format(eval_sentences[:5]))
+    translations = []
+    for i, sentence in enumerate(eval_sentences):
+        translation, _ = seq2seq.evaluate(sentence, max_length=180)
+        translations.append(" ".join(translation[:-1]) + "\n")
+
+    print("Translations: {}".format(translations[:5]))
+    with open("eval-{}.en".format(epoch), "w") as f:
+        for line in translations:
+            f.write(line)
+
+    encoder.train(True)
+    decoder.train(True)
 
 
 def batch(iterable, n=1):
