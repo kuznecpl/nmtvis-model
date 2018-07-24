@@ -1,6 +1,7 @@
 from collections import OrderedDict
 import unicodedata
 import re
+import hp
 from hp import PAD_token, SOS_token, EOS_token, UNK_token, MIN_LENGTH, MAX_LENGTH, MIN_COUNT
 
 
@@ -117,7 +118,7 @@ class LanguagePairLoader:
                 filtered_pairs.append(pair)
         return filtered_pairs
 
-    def prepare_data(self, reverse=False):
+    def prepare_data(self, reverse=hp.reverse_languages):
         input_lang, output_lang, pairs = self.read_langs(reverse)
         print("Read %d sentence pairs" % len(pairs))
 
@@ -132,13 +133,14 @@ class LanguagePairLoader:
         print('Indexed %d words in input language, %d words in output' % (input_lang.n_words, output_lang.n_words))
         return input_lang, output_lang, pairs
 
-    def read_langs(self, reverse=False):
+    def read_langs(self, reverse=hp.reverse_languages):
         print("Reading lines...")
 
         # Read the file and split into lines
         #     filename = '../data/%s-%s.txt' % (lang1, lang2)
-        source_filename = 'myseq2seq/iwslt14.tokenized.de-en/train.%s' % (self.source_lang)
-        target_filename = 'myseq2seq/iwslt14.tokenized.de-en/train.%s' % (self.target_lang)
+
+        source_filename = hp.source_file
+        target_filename = hp.target_file
         source_lines = open(source_filename).read().strip().split('\n')
         target_lines = open(target_filename).read().strip().split('\n')
 
