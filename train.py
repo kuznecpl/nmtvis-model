@@ -30,7 +30,7 @@ def adjust_learning_rate(optimizer, epoch):
 
 
 def adjust_teacher_forcing(iter):
-    return teacher_forcing_ratio * (0.9 ** ((iter - 1) // 500))
+    return teacher_forcing_ratio * (0.9 ** ((iter - 1) // 20000))
 
 
 def train(input_batches, input_lengths, target_batches, target_lengths, encoder, decoder, encoder_optimizer,
@@ -48,6 +48,7 @@ def train(input_batches, input_lengths, target_batches, target_lengths, encoder,
     decoder_input = Variable(torch.LongTensor([SOS_token] * batch_size))
     # decoder_hidden = encoder_hidden[:decoder.n_layers]  # Use last (forward) hidden state from encoder
     decoder_hidden = encoder_hidden
+    last_attn_vector = torch.zeros((batch_size, decoder.hidden_size))
 
     max_target_length = max(target_lengths)
     all_decoder_outputs = Variable(torch.zeros(max_target_length, batch_size, decoder.output_size))
@@ -56,14 +57,15 @@ def train(input_batches, input_lengths, target_batches, target_lengths, encoder,
     if use_cuda:
         decoder_input = decoder_input.cuda()
         all_decoder_outputs = all_decoder_outputs.cuda()
+        last_attn_vector = last_attn_vector.cuda()
 
     teacher_force = random.random() < teacher_forcing_ratio
 
     if teacher_force:
         # Run through decoder one time step at a time
         for t in range(max_target_length):
-            decoder_output, decoder_hidden, decoder_attn = decoder(
-                decoder_input, decoder_hidden, encoder_outputs
+            decoder_output, decoder_hidden, decoder_attn, last_attn_vector = decoder(
+                decoder_input, decoder_hidden, encoder_outputs, last_attn_vector
             )
             loss += criterion(decoder_output, target_batches[t])
             all_decoder_outputs[t] = decoder_output
@@ -71,8 +73,8 @@ def train(input_batches, input_lengths, target_batches, target_lengths, encoder,
     else:
         # Run through decoder one time step at a time
         for t in range(max_target_length):
-            decoder_output, decoder_hidden, decoder_attn = decoder(
-                decoder_input, decoder_hidden, encoder_outputs
+            decoder_output, decoder_hidden, decoder_attn, last_attn_vector = decoder(
+                decoder_input, decoder_hidden, encoder_outputs, last_attn_vector
             )
 
             all_decoder_outputs[t] = decoder_output

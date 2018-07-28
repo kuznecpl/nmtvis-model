@@ -7,8 +7,6 @@ from torch.autograd import Variable
 import sys
 
 sys.path.insert(0, './myseq2seq')
-for p in sys.path:
-    print(p)
 
 from models import AttnDecoderRNN, EncoderRNN, LSTMAttnDecoderRNN, LSTMEncoderRNN
 
@@ -63,11 +61,8 @@ else:
         encoder1.load_state_dict(torch.load(hp.encoder_name))
         attn_decoder1.load_state_dict(torch.load(hp.decoder_name))
     else:
+        print("loading models")
         encoder1.load_state_dict(torch.load(hp.encoder_name, map_location=lambda storage, loc: storage))
         attn_decoder1.load_state_dict(torch.load(hp.decoder_name, map_location=lambda storage, loc: storage))
 
 seq2seq_model = Seq2SeqModel(encoder1, attn_decoder1, input_lang, output_lang)
-
-from train import eval_bleu
-
-# eval_bleu(encoder1, attn_decoder1, input_lang, output_lang, 1)

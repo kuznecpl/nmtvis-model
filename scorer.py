@@ -10,7 +10,7 @@ class Scorer:
             sum_ = 0
             for i in range(m):
                 sum_ += attention[i][j]
-            res += math.log(min(1, sum_))
+            res += math.log(min(1, sum_)) if sum_ > 0 else 0
 
         return -(1 / n) * beta * res
 
@@ -37,7 +37,11 @@ class Scorer:
         sum_ = 0
         for i in range(m):
             for j in range(n):
-                attention[i][j] /= sum([attention[k][j] for k in range(m)])
+                attn_sum = sum([attention[k][j] for k in range(m)])
+                if attn_sum > 0:
+                    attention[i][j] /= attn_sum
+                else:
+                    attention[i][j] = 0
 
                 sum_ += attention[i][j] * math.log(attention[i][j]) if attention[i][j] > 0 else 0
 
@@ -48,3 +52,6 @@ class Scorer:
             attention) + self.absentmindedness_penalty_out(attention)
 
         return math.exp(-0.05 * (x ** 2))
+
+    def length_penalty(self, attention):
+        return len(attention[0])

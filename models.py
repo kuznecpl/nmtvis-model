@@ -266,6 +266,133 @@ class AttnDecoderRNN(nn.Module):
         return output, hidden, attn_weights
 
 
+class LSTMEncoderRNN(nn.Module):
+    def __init__(self, input_size, hidden_size, embed_size, n_layers=n_layers, dropout=hp.dropout, bidirectional=True):
+        super(LSTMEncoderRNN, self).__init__()
+
+        self.input_size = input_size
+        self.hidden_size = hidden_size
+        self.n_layers = n_layers
+        self.dropout = dropout
+        self.bidirectional = bidirectional
+        self.num_directions = 2 if bidirectional else 1
+        self.hidden_size = self.hidden_size // self.num_directions
+
+        self.embedding = nn.Embedding(input_size, embed_size)
+        self.lstm = nn.LSTM(embed_size, self.hidden_size, n_layers, dropout=self.dropout, bidirectional=True)
+
+    def forward(self, input_seqs, input_lengths, hidden=None):
+        # Note: we run this all at once (over the whole input sequence)
+        if use_cuda and hidden: hidden = hidden.cuda()
+
+        embedded = self.embedding(input_seqs)
+        packed = torch.nn.utils.rnn.pack_padded_sequence(embedded, input_lengths)
+        outputs, hidden = self.lstm(packed, hidden)
+        outputs, output_lengths = torch.nn.utils.rnn.pad_packed_sequence(outputs)  # unpack (back to padded)
+
+        if self.bidirectional:
+            # (num_layers * num_directions, batch_size, hidden_size)
+            # => (num_layers, batch_size, hidden_size * num_directions)
+            hidden = self._cat_directions(hidden)
+
+        # outputs = outputs[:, :, :self.hidden_size] + outputs[:, :, self.hidden_size:]  # Sum bidirectional outputs
+
+        return outputs, hidden
+
+    def _cat_directions(self, hidden):
+        """ If the encoder is bidirectional, do the following transformation.
+            Ref: https://github.com/IBM/pytorch-seq2seq/blob/master/seq2seq/models/DecoderRNN.py#L176
+            -----------------------------------------------------------
+            In: (num_layers * num_directions, batch_size, hidden_size)
+            (ex: num_layers=2, num_directions=2)
+
+            layer 1: forward__hidden(1)
+            layer 1: backward_hidden(1)
+            layer 2: forward__hidden(2)
+            layer 2: backward_hidden(2)
+
+            -----------------------------------------------------------
+            Out: (num_layers, batch_size, hidden_size * num_directions)
+
+            layer 1: forward__hidden(1) backward_hidden(1)
+            layer 2: forward__hidden(2) backward_hidden(2)
+        """
+
+        def _cat(h):
+            return torch.cat([h[0:h.size(0):2], h[1:h.size(0):2]], 2)
+
+        if isinstance(hidden, tuple):
+            # LSTM hidden contains a tuple (hidden state, cell state)
+            hidden = tuple([_cat(h) for h in hidden])
+        else:
+            # GRU hidden
+            hidden = _cat(hidden)
+
+        return hidden
+
+
+class LSTMAttnDecoderRNN(nn.Module):
+    def __init__(self, encoder, attn_model, hidden_size, output_size, n_layers=n_layers, dropout=hp.dropout):
+        super(LSTMAttnDecoderRNN, self).__init__()
+
+        # Keep for reference
+        self.attn_model = attn_model
+        self.hidden_size = encoder.hidden_size * encoder.num_directions
+        self.output_size = output_size
+        self.n_layers = encoder.n_layers
+        self.dropout = dropout
+
+        # Define layers
+        self.embedding = nn.Embedding(output_size, self.hidden_size)
+        self.embedding_dropout = nn.Dropout(dropout)
+
+        self.lstm = nn.LSTM(self.hidden_size * 2, self.hidden_size, n_layers, dropout=dropout)
+        self.concat = nn.Linear(self.hidden_size * 2, self.hidden_size)
+        self.out = nn.Linear(self.hidden_size, output_size)
+
+        # Choose attention model
+        if attn_model != 'none':
+            self.attn = Attn(attn_model, self.hidden_size)
+
+    def forward(self, input_seq, last_hidden, encoder_outputs, last_attn_vector, attention_override=None):
+        # Get the embedding of the current input word (last output word)
+        batch_size = input_seq.size(0)
+
+        # B x O => B x H
+        embedded = self.embedding(input_seq)
+        embedded = self.embedding_dropout(embedded)
+
+        # Input feeding
+        # B x H cat B x H => B x 2H
+        embedded = torch.cat((embedded, last_attn_vector), dim=1)
+
+        embedded = embedded.view(1, batch_size, 2 * self.hidden_size)  # S=1 x B x 2H
+
+        # rnn_output: 1 x B x H, hidden: 1 x B x H
+        rnn_output, hidden = self.lstm(embedded, last_hidden)
+
+        # Calculate attention from current RNN state and all encoder outputs;
+        # apply to encoder outputs to get weighted average
+        attn_weights = self.attn(rnn_output, encoder_outputs)
+        if attention_override is not None:
+            attn_weights = Variable(torch.FloatTensor(attention_override + [0]).view(1, 1, len(attention_override) + 1))
+
+        context = attn_weights.bmm(encoder_outputs.transpose(0, 1))  # B x S=1 x N
+
+        # Attentional vector using the RNN hidden state and context vector
+        # concatenated together (Luong eq. 5)
+        rnn_output = rnn_output.squeeze(0)  # S=1 x B x H -> B x H
+        context = context.squeeze(1)  # B x S=1 x N -> B x H
+        concat_input = torch.cat((rnn_output, context), 1)
+        concat_output = F.tanh(self.concat(concat_input))  # B x H
+
+        # Finally predict next token (Luong eq. 6, without softmax)
+        output = self.out(concat_output)
+
+        # Return final output, hidden state, and attention weights (for visualization)
+        return output, hidden, attn_weights, concat_output
+
+
 class Seq2SeqModel:
     def __init__(self, encoder, decoder, input_lang, output_lang):
         self.encoder = encoder
@@ -356,14 +483,17 @@ class Seq2SeqModel:
 
         return translation[1:], attn[1:]
 
-    def translate(self, sentence, beam_size=3, attention_override_map=None, correction_map=None, unk_map=None):
+    def translate(self, sentence, beam_size=3, beam_length=0.5, beam_coverage=0.5, attention_override_map=None,
+                  correction_map=None, unk_map=None, max_length=MAX_LENGTH):
         # words, attention = self.evaluate(sentence)
-        hyps = self.beam_search(sentence, beam_size, attention_override_map, correction_map, unk_map)
+        hyps = self.beam_search(sentence, beam_size, attention_override_map, correction_map, unk_map,
+                                beam_length=beam_length, beam_coverage=beam_coverage, max_length=max_length)
         words, attention = self.best_translation(hyps)
 
         return words, attention, [Translation.from_hypothesis(h, self.output_lang) for h in hyps]
 
     def beam_search(self, input_seq, beam_size=3, attentionOverrideMap=None, correctionMap=None, unk_map=None,
+                    beam_length=0.5, beam_coverage=0.5,
                     max_length=MAX_LENGTH):
 
         torch.set_grad_enabled(False)
@@ -380,11 +510,11 @@ class Seq2SeqModel:
 
         encoder_outputs, encoder_hidden = self.encoder(input_batches, input_lengths, None)
 
-        decoder_hidden = encoder_hidden[:self.decoder.n_layers]
+        decoder_hidden = encoder_hidden
 
         beam_search = BeamSearch(self.decoder, encoder_outputs, decoder_hidden, self.output_lang, beam_size,
                                  attentionOverrideMap,
-                                 correctionMap, unk_map)
+                                 correctionMap, unk_map, beam_length=beam_length, beam_coverage=beam_coverage)
         result = beam_search.search()
 
         self.encoder.train(True)
@@ -395,28 +525,32 @@ class Seq2SeqModel:
         return result  # Return a list of indexes, one for each word in the sentence, plus EOS
 
 
-# Return a list of indexes, one for each word in the sentence, plus EOS
 def indexes_from_sentence(lang, sentence):
     return [lang.word2index[word] for word in sentence.split(' ')] + [EOS_token]
 
 
 class Translation:
-    def __init__(self, words=None, log_probs=None, attns=None, candidates=None):
+    def __init__(self, words=None, log_probs=None, attns=None, candidates=None, is_golden=False, is_unk=None):
         self.words = words
         self.log_probs = log_probs
         self.attns = attns
         self.candidates = candidates
+        self.is_golden = is_golden
+        self.is_unk = is_unk
 
     def slice(self):
-        return Translation(self.words[1:], self.log_probs[1:], self.attns[1:], self.candidates[1:])
+        return Translation(self.words[1:], self.log_probs[1:], self.attns[1:], self.candidates[1:], self.is_golden,
+                           self.is_unk[1:])
 
     @classmethod
-    def from_hypothesis(cls, hypothesis):
+    def from_hypothesis(cls, hypothesis, output_lang):
         translation = Translation()
 
-        translation.words = [output_lang.index2word[token] for token in hypothesis.tokens]
+        translation.words = hypothesis.words
         translation.log_probs = hypothesis.log_probs
         translation.attns = hypothesis.attns
         translation.candidates = hypothesis.candidates
+        translation.is_golden = hypothesis.is_golden
+        translation.is_unk = hypothesis.is_unk
 
         return translation
