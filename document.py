@@ -31,36 +31,31 @@ class Sentence:
         self.beam = beam
         self.score = score
         self.corrected = False
+        self.experiment_metrics = None
 
 
 class Document:
-    def __init__(self, id, name, filename):
+    def __init__(self, id, name, unk_map):
         self.id = id
         self.name = name
-        self.filename = filename
-        self.content = []
-        self.translation_data = []
-        self.scores = []
         self.sentences = []
+        self.unk_map = unk_map
 
     def pad_punctuation(self, s):
         s = re.sub('([.,!?()])', r' \1 ', s)
         s = re.sub('\s{2,}', ' ', s)
         return s
 
-    def load_content(self):
-        with open(UPLOAD_FOLDER + self.filename, "r") as f:
+    def load_content(self, filename):
+        with open(UPLOAD_FOLDER + filename, "r") as f:
             content = f.read()
             doc = nlp(content)
 
-            self.content = []
+            content = []
 
             for sent in doc.sents:
                 tokens = nlp(str(sent).lower())
-                tokens = [str(token).strip() for token in tokens]
-                self.content.append(" ".join(tokens))
+                tokens = [str(token).strip().lower() for token in tokens if not str(token).isspace()]
+                content.append(" ".join(tokens))
 
-        return self.content
-
-    def add_translation_data(self, translation, attn, translations):
-        self.translation_data.append((translation, attn, translations))
+        return content

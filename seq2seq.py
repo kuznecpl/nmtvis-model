@@ -8,8 +8,6 @@ from torch.autograd import Variable
 import sys
 
 sys.path.insert(0, './myseq2seq')
-for p in sys.path:
-    print(p)
 
 from models import AttnDecoderRNN, EncoderRNN, LSTMAttnDecoderRNN, LSTMEncoderRNN
 

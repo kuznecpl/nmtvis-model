@@ -174,6 +174,7 @@ class BeamSearch:
 
         start_attn = [[[0 for _ in range(self.encoder_outputs.size(0))]]]
         last_attn_vector = torch.zeros((1, self.decoder.hidden_size))
+
         if use_cuda:
             last_attn_vector = last_attn_vector.cuda()
 
@@ -206,7 +207,6 @@ class BeamSearch:
 
                 for j in range(self.beam_size):
                     candidates = [self.output_lang.index2word[c] for c in (topk_ids[i][:j] + topk_ids[i][j + 1:])]
-
                     all_hyps.append(
                         h.extend(topk_ids[i][j], topk_words[i][j], topk_log_probs[i][j], ns, av, attn, candidates,
                                  is_unk[i]))

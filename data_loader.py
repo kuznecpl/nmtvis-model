@@ -30,7 +30,7 @@ class Lang:
     def __init__(self, name):
         self.name = name
         self.trimmed = False
-        self.word2index = MyDict()
+        self.word2index = MyDict({"PAD": PAD_token, "SOS": SOS_token, "EOS": EOS_token, "UNK": UNK_token})
         self.word2count = OrderedDict()
         self.index2word = OrderedDict({PAD_token: "PAD", SOS_token: "SOS", EOS_token: "EOS", UNK_token: "UNK"})
         self.n_words = 4  # Count default tokens
@@ -82,7 +82,7 @@ class Lang:
         ))
 
         # Reinitialize dictionaries
-        self.word2index = MyDict()
+        self.word2index = MyDict({"PAD": PAD_token, "SOS": SOS_token, "EOS": EOS_token, "UNK": UNK_token})
         self.word2count = OrderedDict()
         self.index2word = OrderedDict({PAD_token: "PAD", SOS_token: "SOS", EOS_token: "EOS", UNK_token: "UNK"})
         self.n_words = 4  # Count default tokens
