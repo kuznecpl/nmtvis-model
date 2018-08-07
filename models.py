@@ -84,6 +84,7 @@ class Attn(nn.Module):
             concat = torch.cat((hidden, encoder_output.transpose(0, 1)), 2)  # B x S x 2H
 
             energy = self.attn(concat).transpose(2, 1)  # B x H x S
+            energy = F.tanh(energy)
             v = self.v.repeat(B, 1).unsqueeze(1)
             energy = torch.bmm(v, energy)
             return energy.squeeze(1)
@@ -169,7 +170,7 @@ class LSTMAttnDecoderRNN(nn.Module):
         self.embedding = nn.Embedding(output_size, self.hidden_size)
         self.embedding_dropout = nn.Dropout(dropout)
 
-        self.lstm = nn.LSTM(self.hidden_size, self.hidden_size, n_layers, dropout=dropout)
+        self.lstm = nn.LSTM(self.hidden_size * 2, self.hidden_size, n_layers, dropout=dropout)
         self.concat = nn.Linear(self.hidden_size * 2, self.hidden_size)
         self.out = nn.Linear(self.hidden_size, output_size)
 
@@ -177,17 +178,21 @@ class LSTMAttnDecoderRNN(nn.Module):
         if attn_model != 'none':
             self.attn = Attn(attn_model, self.hidden_size)
 
-    def forward(self, input_seq, last_hidden, encoder_outputs, attention_override=None):
+    def forward(self, input_seq, last_hidden, encoder_outputs, last_attn_vector, attention_override=None):
         # Get the embedding of the current input word (last output word)
         batch_size = input_seq.size(0)
 
         # B x O => B x H
         embedded = self.embedding(input_seq)
         embedded = self.embedding_dropout(embedded)
-        embedded = embedded.view(1, batch_size, self.hidden_size)  # S=1 x B x H
 
-        # rnn_output: 1 x B x H
-        # Hidden: 1 x B x H
+        # Input feeding
+        # B x H cat B x H => B x 2H
+        embedded = torch.cat((embedded, last_attn_vector), dim=1)
+
+        embedded = embedded.view(1, batch_size, 2 * self.hidden_size)  # S=1 x B x 2H
+
+        # rnn_output: 1 x B x H, hidden: 1 x B x H
         rnn_output, hidden = self.lstm(embedded, last_hidden)
 
         # Calculate attention from current RNN state and all encoder outputs;
@@ -200,16 +205,16 @@ class LSTMAttnDecoderRNN(nn.Module):
 
         # Attentional vector using the RNN hidden state and context vector
         # concatenated together (Luong eq. 5)
-        rnn_output = rnn_output.squeeze(0)  # S=1 x B x N -> B x N
-        context = context.squeeze(1)  # B x S=1 x N -> B x N
+        rnn_output = rnn_output.squeeze(0)  # S=1 x B x H -> B x H
+        context = context.squeeze(1)  # B x S=1 x N -> B x H
         concat_input = torch.cat((rnn_output, context), 1)
-        concat_output = F.tanh(self.concat(concat_input))
+        concat_output = F.tanh(self.concat(concat_input))  # B x H
 
         # Finally predict next token (Luong eq. 6, without softmax)
         output = self.out(concat_output)
 
         # Return final output, hidden state, and attention weights (for visualization)
-        return output, hidden, attn_weights
+        return output, hidden, attn_weights, concat_output
 
 
 class AttnDecoderRNN(nn.Module):
@@ -351,14 +356,15 @@ class Seq2SeqModel:
         return " ".join(words), np.matrix(attention)
 
     def best_translation(self, hyps):
-        translation = [self.output_lang.index2word[token] for token in hyps[0].tokens]
-        attn = [attn[0] for attn in hyps[0].attns]
+        translation = [self.output_lang.index2word[token] for token in hyps[0].tokens] if hyps else ["SOS"]
+        attn = [attn[0] for attn in hyps[0].attns] if hyps else [0]
 
         return translation[1:], attn[1:]
 
-    def translate(self, sentence, beam_size=3, attention_override_map=None, correction_map=None, unk_map=None):
-        # words, attention = self.evaluate(sentence)
-        hyps = self.beam_search(sentence, beam_size, attention_override_map, correction_map, unk_map)
+    def translate(self, sentence, beam_size=3, attention_override_map=None, correction_map=None, unk_map=None,
+                  max_length=MAX_LENGTH):
+        hyps = self.beam_search(sentence, beam_size, attention_override_map, correction_map, unk_map,
+                                max_length=max_length)
         words, attention = self.best_translation(hyps)
 
         return words, attention, [Translation.from_hypothesis(h, self.output_lang) for h in hyps]
@@ -380,7 +386,7 @@ class Seq2SeqModel:
 
         encoder_outputs, encoder_hidden = self.encoder(input_batches, input_lengths, None)
 
-        decoder_hidden = encoder_hidden[:self.decoder.n_layers]
+        decoder_hidden = encoder_hidden
 
         beam_search = BeamSearch(self.decoder, encoder_outputs, decoder_hidden, self.output_lang, beam_size,
                                  attentionOverrideMap,
@@ -393,6 +399,40 @@ class Seq2SeqModel:
         torch.set_grad_enabled(True)
 
         return result  # Return a list of indexes, one for each word in the sentence, plus EOS
+
+    def eval_bleu(self, source_test_file=hp.source_test_file, target_test_file=hp.target_test_file):
+        self.encoder.train(False)
+        self.decoder.train(False)
+
+        print("Evaluating BLEU")
+
+        references = []
+
+        with open(target_test_file, "r") as f:
+            for line in f.readlines():
+                references.append([line.strip().split(" ")])
+
+        references = references
+
+        source_sentences = []
+        with open(source_test_file, "r") as f:
+            for line in f.readlines():
+                source_sentences.append(line.strip())
+
+        source_sentences = source_sentences
+
+        translations = []
+        for sentence in source_sentences:
+            translation, _, _ = self.translate(sentence, max_length=220)
+            translations.append(translation[:-1])
+
+        import nltk
+        bleu = nltk.translate.bleu_score.corpus_bleu(references, translations)
+
+        self.encoder.train(True)
+        self.decoder.train(True)
+
+        return bleu
 
 
 # Return a list of indexes, one for each word in the sentence, plus EOS
@@ -411,7 +451,7 @@ class Translation:
         return Translation(self.words[1:], self.log_probs[1:], self.attns[1:], self.candidates[1:])
 
     @classmethod
-    def from_hypothesis(cls, hypothesis):
+    def from_hypothesis(cls, hypothesis, output_lang):
         translation = Translation()
 
         translation.words = [output_lang.index2word[token] for token in hypothesis.tokens]

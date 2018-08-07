@@ -8,16 +8,19 @@ use_cuda = torch.cuda.is_available()
 
 
 class Hypothesis:
-    def __init__(self, tokens, words, log_probs, state, attns=None, candidates=None, is_unk=None):
+    def __init__(self, tokens, words, log_probs, state, last_attn_vector, attns=None, candidates=None, is_unk=None):
         self.tokens = tokens
         self.words = words
         self.log_probs = log_probs
         self.state = state
+        self.last_attn_vector = last_attn_vector
         self.attns = [[]] if attns is None else attns
         # candidate tokens at each search step
         self.candidates = candidates
         self.is_golden = False
         self.is_unk = is_unk
+        self.alpha = 0.5
+        self.beta = 0.5
 
     @property
     def latest_token(self):
@@ -27,9 +30,14 @@ class Hypothesis:
     def log_prob(self):
         return sum(self.log_probs)
 
-    def extend(self, token, word, new_log_prob, new_state, attn, candidates, is_unk):
-        return Hypothesis(self.tokens + [token], self.words + [word], self.log_probs + [new_log_prob], new_state,
-                          self.attns + [attn], self.candidates + [candidates], self.is_unk + [is_unk])
+    def extend(self, token, word, new_log_prob, new_state, last_attn_vector, attn, candidates, is_unk):
+        h = Hypothesis(self.tokens + [token], self.words + [word], self.log_probs + [new_log_prob], new_state,
+                       last_attn_vector,
+                       self.attns + [attn], self.candidates + [candidates], self.is_unk + [is_unk])
+        h.alpha = self.alpha
+        h.beta = self.beta
+
+        return h
 
     def __str__(self):
         return ('Hypothesis(log prob = %.4f, tokens = %s)' % (self.log_prob, self.tokens))
@@ -40,10 +48,10 @@ class Hypothesis:
     def score(self):
         return self.log_prob / self.length_norm() + self.coverage_norm()
 
-    def length_norm(self, alpha=0.6):
-        return (5 + len(self.tokens)) ** alpha / (5 + 1) ** alpha
+    def length_norm(self):
+        return (5 + len(self.tokens)) ** self.alpha / (5 + 1) ** self.alpha
 
-    def coverage_norm(self, beta=0.5):
+    def coverage_norm(self):
         # See http://opennmt.net/OpenNMT/translation/beam_search/
 
         # -1 for SOS token
@@ -57,12 +65,13 @@ class Hypothesis:
                 sum_ += self.attns[i][0][j]
             res += math.log(min(1, sum_)) if sum_ > 0 else 0
 
-        return beta * res
+        return self.beta * res
 
 
 class BeamSearch:
     def __init__(self, decoder, encoder_outputs, decoder_hidden, output_lang,
-                 beam_size=3, attentionOverrideMap=None, correctionMap=None, unk_map=None, max_length=MAX_LENGTH):
+                 beam_size=3, attentionOverrideMap=None, correctionMap=None, unk_map=None, beam_length=0.5,
+                 beam_coverage=0.5, max_length=MAX_LENGTH):
         self.decoder = decoder
         self.encoder_outputs = encoder_outputs
         self.decoder_hidden = decoder_hidden
@@ -72,19 +81,22 @@ class BeamSearch:
         self.attention_override_map = attentionOverrideMap
         self.correction_map = correctionMap
         self.unk_map = unk_map
+        self.beam_length = beam_length
+        self.beam_coverage = beam_coverage
 
-    def decode_topk(self, latest_tokens, states, partials):
+    def decode_topk(self, latest_tokens, states, last_attn_vectors, partials):
 
         # len(latest_tokens) x self.beam_size)
         topk_ids = [[0 for _ in range(self.beam_size)] for _ in range(len(latest_tokens))]
         topk_log_probs = [[0 for _ in range(self.beam_size)] for _ in range(len(latest_tokens))]
         new_states = [None for _ in range(len(states))]
+        new_attn_vectors = [None for _ in range(len(states))]
         attns = [None for _ in range(len(states))]
         topk_words = [["" for _ in range(self.beam_size)] for _ in range(len(latest_tokens))]
         is_unk = [False for _ in range(len(latest_tokens))]
 
         # Loop over all hypotheses
-        for token, state, i in zip(latest_tokens, states, range(len(latest_tokens))):
+        for token, state, attn_vector, i in zip(latest_tokens, states, last_attn_vectors, range(len(latest_tokens))):
             decoder_input = Variable(torch.LongTensor([token]))
 
             if use_cuda:
@@ -95,18 +107,27 @@ class BeamSearch:
                 if partials[i] in self.attention_override_map:
                     attention_override = self.attention_override_map[partials[i]]
 
-            decoder_output, decoder_hidden, decoder_attention = self.decoder(decoder_input,
-                                                                             state,
-                                                                             self.encoder_outputs,
-                                                                             attention_override)
+            decoder_output, decoder_hidden, decoder_attention, last_attn_vector = self.decoder(decoder_input,
+                                                                                               state,
+                                                                                               self.encoder_outputs,
+                                                                                               attn_vector,
+                                                                                               attention_override)
 
             top_id = decoder_output.data.topk(1)[1]
             if use_cuda:
                 top_id = top_id.cpu()
 
             top_id = top_id.numpy()[0].tolist()[0]
-            # print("top_id {} partial {} map {}".format(top_id, partials[i], self.unk_map))
 
+            if self.correction_map:
+                keys = self.correction_map.keys()
+                for partial in list(keys):
+                    correction = self.correction_map[partial]
+                    partial = [word if word in self.output_lang.word2index else "UNK" for word in partial.split(" ")]
+                    self.correction_map[" ".join(partial)] = correction
+
+            if top_id == UNK_token:
+                print("UNK found partial = {}".format(partials[i]))
             if top_id == UNK_token and self.unk_map and partials[i] in self.unk_map:
                 # Replace UNK token based on user given mapping
                 word = self.unk_map[partials[i]]
@@ -133,18 +154,18 @@ class BeamSearch:
             topk_v, topk_i = topk_v.numpy()[0], topk_i.numpy()[0]
 
             topk_ids[i] = topk_i.tolist()
-
             topk_log_probs[i] = topk_v.tolist()
             topk_words[i] = [self.output_lang.index2word[id] if not topk_words[i][j] else topk_words[i][j] for j, id in
                              enumerate(topk_ids[i])]
 
             new_states[i] = tuple(h.clone() for h in decoder_hidden)
+            new_attn_vectors[i] = last_attn_vector.clone()
             attns[i] = decoder_attention.data
             if use_cuda:
                 attns[i] = attns[i].cpu()
             attns[i] = attns[i].numpy().tolist()[0]
 
-        return topk_ids, topk_words, topk_log_probs, new_states, attns, is_unk
+        return topk_ids, topk_words, topk_log_probs, new_states, new_attn_vectors, attns, is_unk
 
     def to_partial(self, tokens):
         return " ".join([self.output_lang.index2word[token] for token in tokens])
@@ -152,9 +173,18 @@ class BeamSearch:
     def search(self):
 
         start_attn = [[[0 for _ in range(self.encoder_outputs.size(0))]]]
+        last_attn_vector = torch.zeros((1, self.decoder.hidden_size))
+        if use_cuda:
+            last_attn_vector = last_attn_vector.cuda()
+
         hyps = [Hypothesis([SOS_token], [self.output_lang.index2word[SOS_token]], [0.0],
                            tuple(h.clone() for h in self.decoder_hidden),
+                           last_attn_vector.clone(),
                            start_attn, [[]], [False]) for _ in range(self.beam_size)]
+        for h in hyps:
+            h.alpha = self.beam_length
+            h.beta = self.beam_coverage
+
         result = []
 
         steps = 0
@@ -163,25 +193,22 @@ class BeamSearch:
             latest_tokens = [hyp.latest_token for hyp in hyps]
             states = [hyp.state for hyp in hyps]
             partials = [self.to_partial(hyp.tokens) for hyp in hyps]
+            last_attn_vectors = [hyp.last_attn_vector for hyp in hyps]
             all_hyps = []
 
             num_beam_source = 1 if steps == 0 else len(hyps)
-            topk_ids, topk_words, topk_log_probs, new_states, attns, is_unk = self.decode_topk(latest_tokens, states,
-                                                                                               partials)
+            topk_ids, topk_words, topk_log_probs, new_states, new_attn_vectors, attns, is_unk = self.decode_topk(
+                latest_tokens, states, last_attn_vectors,
+                partials)
 
             for i in range(num_beam_source):
-                h, ns, attn = hyps[i], new_states[i], attns[i]
+                h, ns, av, attn = hyps[i], new_states[i], new_attn_vectors[i], attns[i]
 
                 for j in range(self.beam_size):
                     candidates = [self.output_lang.index2word[c] for c in (topk_ids[i][:j] + topk_ids[i][j + 1:])]
 
-                    # EOS penalty
-                    gamma = 0.5
-                    if topk_ids[i][j] == EOS_token:
-                        topk_log_probs[i][j] += gamma * self.encoder_outputs.size(0) / (len(h.tokens) - 1)
-
                     all_hyps.append(
-                        h.extend(topk_ids[i][j], topk_words[i][j], topk_log_probs[i][j], ns, attn, candidates,
+                        h.extend(topk_ids[i][j], topk_words[i][j], topk_log_probs[i][j], ns, av, attn, candidates,
                                  is_unk[i]))
 
             # Filter
@@ -201,7 +228,7 @@ class BeamSearch:
                     break
             steps += 1
 
-        print("Beam Search found {} hypotheses for beam_size {}".format(len(result), self.beam_size))
+        #print("Beam Search found {} hypotheses for beam_size {}".format(len(result), self.beam_size))
         res = self._best_hyps(result, normalize=True)
         if res:
             res[0].is_golden = True

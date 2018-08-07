@@ -48,6 +48,24 @@ class Lang:
         else:
             self.word2count[word] += 1
 
+    def trim_top(self, vocab_size=50000):
+        words = list(self.word2count.keys())
+        words.sort(key=lambda w: self.word2count[w], reverse=True)
+        words = words[:vocab_size]
+
+        print('keep_words %s / %s = %.4f' % (
+            len(words), len(self.word2index), len(words) / len(self.word2index)
+        ))
+
+        # Reinitialize dictionaries
+        self.word2index = MyDict()
+        self.word2count = OrderedDict()
+        self.index2word = OrderedDict({PAD_token: "PAD", SOS_token: "SOS", EOS_token: "EOS", UNK_token: "UNK"})
+        self.n_words = 4  # Count default tokens
+
+        for word in words:
+            self.index_word(word)
+
     # Remove words below a certain count threshold
     def trim(self, min_count):
         if self.trimmed: return
@@ -96,15 +114,17 @@ class DateConverterLoader:
 
 
 class LanguagePairLoader:
-    def __init__(self, source_lang, target_lang):
+    def __init__(self, source_lang, target_lang, source_file=hp.source_file, target_file=hp.target_file):
         self.source_lang = source_lang
         self.target_lang = target_lang
+        self.source_file = source_file
+        self.target_file = target_file
 
     def load(self):
         input_lang, output_lang, pairs = self.prepare_data()
 
-        input_lang.trim(MIN_COUNT)
-        output_lang.trim(MIN_COUNT)
+        input_lang.trim_top()
+        output_lang.trim_top()
 
         # pairs = self.filter(input_lang, output_lang, pairs)
 
@@ -139,10 +159,8 @@ class LanguagePairLoader:
         # Read the file and split into lines
         #     filename = '../data/%s-%s.txt' % (lang1, lang2)
 
-        source_filename = hp.source_file
-        target_filename = hp.target_file
-        source_lines = open(source_filename).read().strip().split('\n')
-        target_lines = open(target_filename).read().strip().split('\n')
+        source_lines = open(self.source_file).read().strip().split('\n')
+        target_lines = open(self.target_file).read().strip().split('\n')
 
         # Split every line into pairs and normalize
         # pairs = [[normalize_string(s) for s in l.split('\t')] for l in lines]

@@ -2,6 +2,7 @@ from __future__ import unicode_literals, print_function, division
 import random
 import torch
 import torch.nn as nn
+from torch import optim
 from torch.autograd import Variable
 
 import sys
@@ -23,51 +24,53 @@ import os.path
 use_cuda = torch.cuda.is_available()
 
 loader = LanguagePairLoader("de", "en")
-# loader = DateConverterLoader()
+eval_loader = LanguagePairLoader("de", "en", hp.source_test_file, hp.target_test_file)
 
 input_lang, output_lang, pairs = None, None, None
-input_lang, output_lang, pairs = loader.load()
 
-'''
+_, _, eval_pairs = eval_loader.load()
+
+if True:
+    input_lang, output_lang, pairs = loader.load()
     pickle.dump(input_lang, open("input.dict", "wb"))
     pickle.dump(output_lang, open("output.dict", "wb"))
-    pickle.dump(pairs, open("pairs.data", "wb"))
 else:
     input_lang = pickle.load(open("input.dict", "rb"))
     output_lang = pickle.load(open("output.dict", "rb"))
-    pairs = pickle.load(open("pairs.data", "rb"))'''
 
-print(random.choice(pairs))
+encoder = LSTMEncoderRNN(input_lang.n_words, hidden_size, embed_size)
+decoder = LSTMAttnDecoderRNN(encoder, hp.attention, hidden_size, output_lang.n_words)
 
-encoder1 = None
-attn_decoder1 = None
+if use_cuda:
+    encoder = encoder.cuda()
+    decoder = decoder.cuda()
 
-encoder1 = LSTMEncoderRNN(input_lang.n_words, hidden_size, embed_size)
-attn_decoder1 = LSTMAttnDecoderRNN(encoder1, hp.attention, hidden_size, output_lang.n_words)
+print(encoder)
+print(decoder)
 
-print(attn_decoder1)
+seq2seq_model = Seq2SeqModel(encoder, decoder, input_lang, output_lang)
 
-if not os.path.isfile(hp.encoder_name) or not os.path.isfile(hp.decoder_name):
-    if use_cuda:
-        encoder1 = encoder1.cuda()
-        attn_decoder1 = attn_decoder1.cuda()
+if os.path.isfile(hp.checkpoint_name):
+    checkpoint = torch.load(hp.checkpoint_name) if use_cuda else torch.load(hp.checkpoint_name,
+                                                                            map_location=lambda storage, loc: storage)
+    encoder_state = checkpoint["encoder"]
+    decoder_state = checkpoint["decoder"]
+    encoder_optimizer_state = checkpoint["encoder_optimizer"]
+    decoder_optimizer_state = checkpoint["decoder_optimizer"]
+    epoch = checkpoint["epoch"]
+    train_loss = checkpoint["train_loss"]
+    eval_loss = checkpoint["eval_loss"]
+    bleu_scores = checkpoint["bleu_scores"]
 
-    train_iters(encoder1, attn_decoder1, input_lang, output_lang, pairs)
+    encoder.load_state_dict(encoder_state)
+    decoder.load_state_dict(decoder_state)
 
-    torch.save(encoder1.state_dict(), hp.encoder_name)
-    torch.save(attn_decoder1.state_dict(), hp.decoder_name)
+    if epoch < hp.n_epochs:
+        train_iters(seq2seq_model, pairs, eval_pairs,
+                    encoder_optimizer_state=encoder_optimizer_state,
+                    decoder_optimizer_state=decoder_optimizer_state, train_loss=train_loss, eval_loss=eval_loss,
+                    bleu_scores=bleu_scores,
+                    start_epoch=epoch + 1)
 else:
-    if use_cuda:
-        encoder1 = encoder1.cuda()
-        attn_decoder1 = attn_decoder1.cuda()
-        encoder1.load_state_dict(torch.load(hp.encoder_name))
-        attn_decoder1.load_state_dict(torch.load(hp.decoder_name))
-    else:
-        encoder1.load_state_dict(torch.load(hp.encoder_name, map_location=lambda storage, loc: storage))
-        attn_decoder1.load_state_dict(torch.load(hp.decoder_name, map_location=lambda storage, loc: storage))
-
-seq2seq_model = Seq2SeqModel(encoder1, attn_decoder1, input_lang, output_lang)
-
-from train import eval_bleu
-
-# eval_bleu(encoder1, attn_decoder1, input_lang, output_lang, 1)
+    train_iters(seq2seq_model, pairs, eval_pairs, encoder_optimizer_state=None,
+                decoder_optimizer_state=None, train_loss=[], eval_loss=[], bleu_scores=[], start_epoch=1)
