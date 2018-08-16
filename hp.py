@@ -46,4 +46,4 @@ target_file = "iwslt14.tokenized.de-en/train.en"
 source_test_file = "iwslt14.tokenized.de-en/test.de"
 target_test_file = "iwslt14.tokenized.de-en/test.en"
 '''
-reverse_languages = False
+reverse_languages = True

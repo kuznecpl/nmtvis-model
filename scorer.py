@@ -2,6 +2,23 @@ import math
 
 
 class Scorer:
+    def compute_scores(self, source, translation, attention):
+        return {"coverage_penalty": self.coverage_penalty(attention),
+                "coverage_deviation_penalty": self.coverage_deviation_penalty(attention),
+                "confidence": self.confidence(attention),
+                "length": len(source.split(" ")),
+                "ap_in": self.absentmindedness_penalty_in(attention),
+                "ap_out": self.absentmindedness_penalty_out(attention)
+                }
+
+    def length_deviation(self, source, translation):
+        source = source.split(" ")
+        translation = translation.split(" ")
+
+        X, Y = len(source), len(translation)
+
+        return math.fabs(X - Y) / X
+
     def coverage_penalty(self, attention, beta=1):
         m, n = len(attention), len(attention[0])
 
@@ -24,28 +41,18 @@ class Scorer:
 
     def absentmindedness_penalty_out(self, attention):
         m, n = len(attention), len(attention[0])
+
         sum_ = 0
-        for i in range(m):
-            for j in range(n):
-                sum_ += attention[i][j] * math.log(attention[i][j]) if attention[i][j] > 0 else 0
+        for row in attention:
+            norm = sum(row)
+            if norm > 0:
+                normRow = [i / norm for i in row]
+                sum_ += sum([(i * math.log(i) if i else 0) for i in normRow])
 
         return - (1 / m) * sum_
 
     def absentmindedness_penalty_in(self, attention):
-        m, n = len(attention), len(attention[0])
-
-        sum_ = 0
-        for i in range(m):
-            for j in range(n):
-                attn_sum = sum([attention[k][j] for k in range(m)])
-                if attn_sum > 0:
-                    attention[i][j] /= attn_sum
-                else:
-                    attention[i][j] = 0
-
-                sum_ += attention[i][j] * math.log(attention[i][j]) if attention[i][j] > 0 else 0
-
-        return - (1 / m) * sum_
+        return self.absentmindedness_penalty_out(list(zip(*attention)))
 
     def confidence(self, attention):
         x = self.coverage_deviation_penalty(attention) + self.absentmindedness_penalty_in(

@@ -4,7 +4,6 @@ import time
 from torch.autograd import Variable
 from torch import optim
 from hp import PAD_token, SOS_token, EOS_token, MIN_LENGTH, MAX_LENGTH
-from masked_cross_entropy import *
 from models import Seq2SeqModel
 import random
 import math
@@ -113,7 +112,8 @@ def train_iters(seq2seq_model, pairs,
                 decoder_optimizer_state=None, train_loss=[], eval_loss=[],
                 bleu_scores=[],
                 start_epoch=1,
-                retrain=False):
+                retrain=False,
+                weight_decay=1e-5):
     encoder = seq2seq_model.encoder
     decoder = seq2seq_model.decoder
     input_lang = seq2seq_model.input_lang
@@ -122,12 +122,12 @@ def train_iters(seq2seq_model, pairs,
     # Initialize optimizers and criterion
     if not retrain:
         encoder_optimizer = optim.Adam(filter(lambda p: p.requires_grad, encoder.parameters()), lr=learning_rate,
-                                       weight_decay=1e-5)
+                                       weight_decay=weight_decay)
     else:
         encoder_optimizer = None
 
     decoder_optimizer = optim.Adam(filter(lambda p: p.requires_grad, decoder.parameters()),
-                                   lr=learning_rate * decoder_learning_ratio, weight_decay=1e-5)
+                                   lr=learning_rate * decoder_learning_ratio, weight_decay=weight_decay)
 
     if encoder_optimizer_state:
         encoder_optimizer.load_state_dict(encoder_optimizer_state)
@@ -290,7 +290,8 @@ def retrain_iters(seq2seq_model, pairs,
                   save_every=hp.save_every_epochs,
                   learning_rate=hp.learning_rate,
                   decoder_learning_ratio=hp.decoder_learning_ratio,
-                  batch_size=hp.batch_size):
+                  batch_size=hp.batch_size,
+                  weight_decay=1e-5):
     encoder, decoder = seq2seq_model.encoder, seq2seq_model.decoder
 
     encoder.train(True)
