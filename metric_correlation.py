@@ -17,6 +17,7 @@ matplotlib.use('Agg')
 import matplotlib.pylab as plt
 import seaborn as sns
 import itertools
+from keyphrase_extractor import DomainSpecificExtractor
 
 
 def load_model():
@@ -43,7 +44,7 @@ def load_model():
 
 
 def compute_gleu(target, translation):
-    gleu = gleu_score.sentence_gleu([target.split(" ")], translation.split(" "))
+    gleu = gleu_score.sentence_gleu([target.replace("@@ ", "").split(" ")], translation.replace("@@ ", "").split(" "))
     return gleu
 
 
@@ -57,6 +58,11 @@ seq2seq_model = load_model()
 sources, targets, translations = [p[0] for p in pairs], [p[1] for p in pairs], []
 scorer = Scorer()
 
+extractor = DomainSpecificExtractor(source_file="data/wmt14/newstest2016.tok.de", train_source_file=hp.source_file,
+                                    train_vocab_file="train_vocab.pkl")
+keyphrases = extractor.extract_keyphrases(n_results=100)
+print(keyphrases)
+
 metric_to_gleu = {}
 all_gleu_scores = []
 
@@ -68,9 +74,15 @@ for i, pair in enumerate(pairs):
         print("Translated {} of {}".format(i, len(pairs)))
     translation, attn, _ = seq2seq_model.translate(pair[0])
     translations.append(" ".join(translation[:-1]))
-    scores = scorer.compute_scores(pair[0], " ".join(translation), attn)
+    scores = scorer.compute_scores(pair[0], " ".join(translation), attn, keyphrases)
+
+    if scores["keyphrase_score"] == 0:
+        continue
 
     for metric in scores:
+        if metric == "length":
+            continue
+
         if not metric in metric_to_gleu:
             metric_to_gleu[metric] = {}
         if not scores[metric] in metric_to_gleu[metric]:
@@ -88,7 +100,8 @@ name_map = {"ap_in": r"$\mathregular{Absentmindedness\ Penalty_{IN}}$",
             "ap_out": r"$\mathregular{Absentmindedness\ Penalty_{OUT}}$", "length": "Length",
             "coverage_penalty": "Coverage Penalty",
             "coverage_deviation_penalty": "Coverage Deviation Penalty", "confidence": "Confidence",
-            "length_deviation": "Length Deviation"}
+            "length_deviation": "Length Deviation",
+            "keyphrase_score": "Keyphrase Score"}
 bins_map = {"length": 60}
 for i, metric in enumerate(metric_to_gleu):
     metric_scores = []
@@ -118,7 +131,7 @@ plt.tight_layout()
 plt.savefig("gleu_dist.png")
 plt.clf()
 
-f, axes = plt.subplots(2, 3)
+f, axes = plt.subplots(2, 3, sharey=True)
 f.set_figheight(8)
 f.set_figwidth(12)
 axes = np.reshape(axes, (6,))
@@ -145,6 +158,8 @@ for i, metric in enumerate(metric_to_gleu):
     sns.regplot(x, y, ax=axes[i], scatter_kws={'alpha': 0.3})
     # plt.plot(np.asarray([x_min, x_max]), b + m * np.asarray([x_min, x_max]), '-')
 
+axes[0].set(ylabel="GLEU")
+axes[3].set(ylabel="GLEU")
 plt.tight_layout()
 plt.savefig("corr.png".format(metric))
 plt.close()

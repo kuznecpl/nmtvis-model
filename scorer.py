@@ -2,14 +2,23 @@ import math
 
 
 class Scorer:
-    def compute_scores(self, source, translation, attention):
+    def compute_scores(self, source, translation, attention, keyphrases):
         return {"coverage_penalty": self.coverage_penalty(attention),
                 "coverage_deviation_penalty": self.coverage_deviation_penalty(attention),
                 "confidence": self.confidence(attention),
                 "length": len(source.split(" ")),
                 "ap_in": self.absentmindedness_penalty_in(attention),
-                "ap_out": self.absentmindedness_penalty_out(attention)
+                "ap_out": self.absentmindedness_penalty_out(attention),
+                "keyphrase_score": self.keyphrase_score(source, keyphrases, attention)
                 }
+
+    def keyphrase_score(self, sentence, keyphrases, attention):
+        score = 0
+
+        for word in sentence.replace("@@ ", "").split(" "):
+            for keyphrase, freq in keyphrases:
+                score += word.lower().count(keyphrase.lower()) * math.log(freq)
+        return score
 
     def length_deviation(self, source, translation):
         source = source.split(" ")

@@ -535,6 +535,9 @@ class Seq2SeqModel:
 
         print("Evaluating BLEU")
 
+        if hp.reverse_languages:
+            source_test_file, target_test_file = target_test_file, source_test_file
+
         references = []
 
         with open(target_test_file, "r") as f:

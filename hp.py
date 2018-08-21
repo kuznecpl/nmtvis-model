@@ -3,6 +3,10 @@ PAD_token = 0
 SOS_token = 1
 EOS_token = 2
 UNK_token = 3
+PAD_text = "<PAD>"
+SOS_text = "<SOS>"
+UNK_text = "<UNK>"
+EOS_text = "<EOS>"
 
 # Vocabulary parameters
 MIN_COUNT = 2
@@ -46,4 +50,4 @@ target_file = "iwslt14.tokenized.de-en/train.en"
 source_test_file = "iwslt14.tokenized.de-en/test.de"
 target_test_file = "iwslt14.tokenized.de-en/test.en"
 '''
-reverse_languages = True
+reverse_languages = False

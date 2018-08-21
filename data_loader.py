@@ -2,7 +2,8 @@ from collections import OrderedDict
 import unicodedata
 import re
 import hp
-from hp import PAD_token, SOS_token, EOS_token, UNK_token, MIN_LENGTH, MAX_LENGTH, MIN_COUNT
+from hp import PAD_token, SOS_token, EOS_token, UNK_token, PAD_text, SOS_text, EOS_text, UNK_text, MIN_LENGTH, \
+    MAX_LENGTH, MIN_COUNT
 
 
 # Turn a Unicode string to plain ASCII, thanks to http://stackoverflow.com/a/518232/2809427
@@ -30,9 +31,10 @@ class Lang:
     def __init__(self, name):
         self.name = name
         self.trimmed = False
-        self.word2index = MyDict({"PAD": PAD_token, "SOS": SOS_token, "EOS": EOS_token, "UNK": UNK_token})
-        self.word2count = OrderedDict()
-        self.index2word = OrderedDict({PAD_token: "PAD", SOS_token: "SOS", EOS_token: "EOS", UNK_token: "UNK"})
+        self.word2index = MyDict({PAD_text: PAD_token, SOS_text: SOS_token, EOS_text: EOS_token, UNK_text: UNK_token})
+        self.word2count = OrderedDict({PAD_text: 0, SOS_text: 0, EOS_text: 0, UNK_text: 0})
+        self.index2word = OrderedDict(
+            {PAD_token: PAD_text, SOS_token: SOS_text, EOS_token: EOS_text, UNK_token: UNK_text})
         self.n_words = 4  # Count default tokens
 
     def index_words(self, sentence):
@@ -58,13 +60,15 @@ class Lang:
         ))
 
         # Reinitialize dictionaries
-        self.word2index = MyDict()
-        self.word2count = OrderedDict()
-        self.index2word = OrderedDict({PAD_token: "PAD", SOS_token: "SOS", EOS_token: "EOS", UNK_token: "UNK"})
+        self.word2index = MyDict({PAD_text: PAD_token, SOS_text: SOS_token, EOS_text: EOS_token, UNK_text: UNK_token})
+        word2count = OrderedDict({word: self.word2count[word] for word in words})
+        self.index2word = OrderedDict(
+            {PAD_token: PAD_text, SOS_token: SOS_text, EOS_token: EOS_text, UNK_token: UNK_text})
         self.n_words = 4  # Count default tokens
 
         for word in words:
             self.index_word(word)
+        self.word2count = word2count
 
     # Remove words below a certain count threshold
     def trim(self, min_count):

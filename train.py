@@ -222,7 +222,9 @@ def train_iters(seq2seq_model, pairs,
                 "epoch": epoch,
                 "train_loss": train_loss,
                 "eval_loss": eval_loss,
-                "bleu_scores": bleu_scores
+                "bleu_scores": bleu_scores,
+                "max_length": hp.MAX_LENGTH,
+                "min_length": hp.MIN_LENGTH
             }, hp.checkpoint_name)
 
         print("Avg. Training Loss: %.2f Avg. Evaluation Loss: %.2f" % (avg_training_loss, avg_evaluation_loss))
