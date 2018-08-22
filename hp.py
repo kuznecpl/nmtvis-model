@@ -33,15 +33,17 @@ n_layers = 2
 attention = "general"
 dropout = 0.1
 
+prefix = "myseq2seq/"
+
 # Checkpoint filenames
-checkpoint_name = "checkpoint.pt"
+checkpoint_name = prefix + "checkpoint.pt"
 
 # WMT16
-source_file = "data/wmt14/train.tok.clean.bpe.32000.de"
-target_file = "data/wmt14/train.tok.clean.bpe.32000.en"
-source_test_file = "data/wmt14/newstest2016.tok.bpe.32000.de"
-target_test_file = "data/wmt14/newstest2016.tok.bpe.32000.en"
-bpe_file = "data/wmt14/bpe.32000"
+source_file = prefix + "data/wmt14/train.tok.clean.bpe.32000.de"
+target_file = prefix + "data/wmt14/train.tok.clean.bpe.32000.en"
+source_test_file = prefix + "data/wmt14/newstest2016.tok.bpe.32000.de"
+target_test_file = prefix + "data/wmt14/newstest2016.tok.bpe.32000.en"
+bpe_file = prefix + "data/wmt14/bpe.32000"
 '''
 
 # Training data files

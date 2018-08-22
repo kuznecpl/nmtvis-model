@@ -28,13 +28,13 @@ input_lang, output_lang, pairs = None, None, None
 
 _, _, eval_pairs = eval_loader.load()
 
-if True:
+if not os.path.isfile(hp.prefix + "input.dict"):
     input_lang, output_lang, pairs = loader.load()
-    pickle.dump(input_lang, open("input.dict", "wb"))
-    pickle.dump(output_lang, open("output.dict", "wb"))
+    pickle.dump(input_lang, open(hp.prefix + "input.dict", "wb"))
+    pickle.dump(output_lang, open(hp.prefix + "output.dict", "wb"))
 else:
-    input_lang = pickle.load(open("input.dict", "rb"))
-    output_lang = pickle.load(open("output.dict", "rb"))
+    input_lang = pickle.load(open(hp.prefix + "input.dict", "rb"))
+    output_lang = pickle.load(open(hp.prefix + "output.dict", "rb"))
 
 encoder = LSTMEncoderRNN(input_lang.n_words, hidden_size, embed_size)
 decoder = LSTMAttnDecoderRNN(encoder, hp.attention, hidden_size, output_lang.n_words)

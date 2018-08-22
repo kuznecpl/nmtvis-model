@@ -3,6 +3,8 @@ import torch.nn as nn
 from torch.autograd import Variable
 from hp import MAX_LENGTH, SOS_token, EOS_token, UNK_token
 import math
+from subword_nmt.apply_bpe import BPE
+import hp
 
 use_cuda = torch.cuda.is_available()
 
@@ -83,6 +85,7 @@ class BeamSearch:
         self.unk_map = unk_map
         self.beam_length = beam_length
         self.beam_coverage = beam_coverage
+        self.bpe = BPE(open(hp.bpe_file))
 
     def decode_topk(self, latest_tokens, states, last_attn_vectors, partials):
 
@@ -119,12 +122,6 @@ class BeamSearch:
 
             top_id = top_id.numpy()[0].tolist()[0]
 
-            if self.correction_map:
-                keys = self.correction_map.keys()
-                for partial in list(keys):
-                    correction = self.correction_map[partial]
-                    partial = [word if word in self.output_lang.word2index else "UNK" for word in partial.split(" ")]
-                    self.correction_map[" ".join(partial)] = correction
 
             if top_id == UNK_token:
                 print("UNK found partial = {}".format(partials[i]))
@@ -207,6 +204,7 @@ class BeamSearch:
 
                 for j in range(self.beam_size):
                     candidates = [self.output_lang.index2word[c] for c in (topk_ids[i][:j] + topk_ids[i][j + 1:])]
+
                     all_hyps.append(
                         h.extend(topk_ids[i][j], topk_words[i][j], topk_log_probs[i][j], ns, av, attn, candidates,
                                  is_unk[i]))
@@ -228,7 +226,7 @@ class BeamSearch:
                     break
             steps += 1
 
-        #print("Beam Search found {} hypotheses for beam_size {}".format(len(result), self.beam_size))
+        print("Beam Search found {} hypotheses for beam_size {}".format(len(result), self.beam_size))
         res = self._best_hyps(result, normalize=True)
         if res:
             res[0].is_golden = True

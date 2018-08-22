@@ -1,5 +1,7 @@
 import spacy
 import re
+import hp
+from subword_nmt.apply_bpe import BPE
 
 nlp = spacy.load("de")
 
@@ -23,6 +25,8 @@ nlp.add_pipe(sentence_division_suppresor, name='sent_fix', before='parser')
 
 
 class Sentence:
+    EXPERIMENT_TYPES = ["plain", "beam"]
+
     def __init__(self, id, source, translation, attention, beam, score):
         self.id = id
         self.source = source
@@ -32,14 +36,17 @@ class Sentence:
         self.score = score
         self.corrected = False
         self.experiment_metrics = None
+        self.experiment_type = "BEAM"
 
 
 class Document:
-    def __init__(self, id, name, unk_map):
+    def __init__(self, id, name, unk_map, filepath):
         self.id = id
         self.name = name
         self.sentences = []
+        self.keyphrases = []
         self.unk_map = unk_map
+        self.filepath = filepath
 
     def pad_punctuation(self, s):
         s = re.sub('([.,!?()])', r' \1 ', s)
@@ -50,12 +57,15 @@ class Document:
         with open(UPLOAD_FOLDER + filename, "r") as f:
             content = f.read()
             doc = nlp(content)
+            bpe = BPE(open(hp.bpe_file))
 
             content = []
 
             for sent in doc.sents:
-                tokens = nlp(str(sent).lower())
-                tokens = [str(token).strip().lower() for token in tokens if not str(token).isspace()]
-                content.append(" ".join(tokens))
+                tokens = nlp(str(sent))
+                tokens = [str(token).strip() for token in tokens if not str(token).isspace()]
+                sentence = " ".join(tokens)
+                sentence = bpe.process_line(sentence)
+                content.append(sentence)
 
         return content
