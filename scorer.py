@@ -38,7 +38,7 @@ class Scorer:
                 sum_ += attention[i][j]
             res += math.log(min(1, sum_)) if sum_ > 0 else 0
 
-        return -(1 / n) * beta * res
+        return -1 * beta * res
 
     def coverage_deviation_penalty(self, attention):
         m, n = len(attention), len(attention[0])
