@@ -22,7 +22,7 @@ plt.style.use('seaborn-darkgrid')
 from nltk.translate import gleu_score
 from keyphrase_extractor import DomainSpecificExtractor
 
-step_size = 10
+step_size = 5
 
 
 def load_model():
@@ -91,152 +91,166 @@ def gleu_distr(sources, targets, translations):
     return gleu_scores
 
 
-def evaluate_metric(sources, targets, translations, scores, metric, need_sort=True, reverse=False):
-    print("Evaluating {}".format(metric))
-    # Sort by metric
-    if need_sort:
-        sorted_sentences = [(x, y, z) for _, x, y, z in
-                            sorted(zip(scores, sources, targets, translations), reverse=reverse)]
-        sources, targets, translations = zip(*sorted_sentences)
-
-    # Compute base BLEU
-    base_bleu = compute_bleu(targets, translations)
-    print("Base BLEU: {}".format(base_bleu))
-
-    bleu_scores = [base_bleu]
-
-    delta_bleus = []
-    delta_recalls = []
-
-    n = len(sources)
-
-    for i in range(1, 100 // (step_size * 2) + 1):
-        print("Correcting first {}% sentences".format(i * step_size))
-
-        curr_end = i * n // (100 // step_size)
-
-        corrected_translations = list(translations)
-        # 'Correct' first i sentences
-        corrected_translations[: curr_end] = targets[: curr_end]
-
-        # Compute BLEU before training for comparison
-        pretraining_bleu = compute_bleu(targets, corrected_translations)
-        bleu_scores.append(pretraining_bleu)
-
-        prerecall = unigram_recall(target_keyphrases, targets[curr_end:], corrected_translations[curr_end:])
-        preprecision = unigram_precision(target_keyphrases, targets[curr_end:], corrected_translations[curr_end:])
-        print("Pre Recall {}".format(prerecall))
-        print("Pre Precision {}".format(preprecision))
-
-        pre_gleu_scores = gleu_distr(sources, targets[curr_end:], translations[curr_end:])
-        # plt.figure(0)
-        # sns.distplot(pre_gleu_scores, bins=20, kde=True, kde_kws={"bw": .2}, hist_kws={"align": "mid", "rwidth": 0.75})
-        print("Pre-Training BLEU: {}".format(pretraining_bleu))
-
-        # Now train, and compute BLEU again
-        retrain_iters(seq2seq_model,
-                      list((a, b) for a, b in zip(sources[: curr_end], corrected_translations[: curr_end])), [],
-                      batch_size=n // (100 // step_size),
-                      n_epochs=20, learning_rate=0.00001, weight_decay=1e-3)
-
-        # Translate trained model
-        for j in range(curr_end, len(sources)):
-            translation, _, _ = seq2seq_model.translate(sources[j])
-            corrected_translations[j] = " ".join(translation[:-1])
-
-        reload_model(seq2seq_model)
-
-        # Compute posttraining BLEU
-        posttraining_bleu = compute_bleu(targets, corrected_translations)
-        post_gleu_scores = gleu_distr(sources, targets[curr_end:], corrected_translations[curr_end:])
-
-        postrecall = unigram_recall(target_keyphrases, targets[curr_end:], corrected_translations[curr_end:])
-        delta_recalls.append(postrecall - prerecall)
-        print("Post Recall {}".format(postrecall))
-        postprecision = unigram_precision(target_keyphrases, targets[curr_end:], corrected_translations[curr_end:])
-        print("Post Precision {}".format(postprecision))
-        # plt.figure(0)
-        # sns.distplot(post_gleu_scores, bins=20, kde=True, kde_kws={"bw": .2}, hist_kws={"align": "mid", "rwidth": 0.75})
-        # plt.savefig("gleu_dist_{}_{}_{}.png".format(metric, i * step_size, "DESC" if reverse else "ASC"))
-        # plt.clf()
-
-        diff_gleu = [post - pre for (post, pre) in zip(post_gleu_scores, pre_gleu_scores)]
-        diff_gleu = sorted(diff_gleu, reverse=True)
-        # plt.plot(list(range(0, len(diff_gleu))), diff_gleu)
-        # plt.savefig("gleu_diff_{}_{}_{}".format(metric, i * step_size, "DESC" if reverse else "ASC"))
-        # plt.clf()
-
-        print("Post-Training BLEU: {}".format(posttraining_bleu))
-
-        delta_bleu = posttraining_bleu - pretraining_bleu
-        print("Delta BLEU {}".format(delta_bleu))
-        print()
-
-        delta_bleus.append(delta_bleu)
-
-    # plt.figure(101)
-    # bleu_scores.append(1)
-    # plt.plot(list(range(0, len(bleu_scores))), bleu_scores, label="{}_{}".format(metric, "DESC" if reverse else "ASC"))
-
-    print("Delta Recalls")
-    print(delta_recalls)
-    return delta_bleus
+sort_direction = {"coverage_penalty": True,
+                  "coverage_deviation_penalty": True,
+                  "confidence": False,
+                  "length": True,
+                  "ap_in": True,
+                  "ap_out": True,
+                  "keyphrase_score": False,
+                  }
 
 
-def get_gensim_topics(sources):
-    from summa import keywords
-    from nltk.corpus import stopwords
-    from nltk.stem.snowball import GermanStemmer
+class MetricExperiment:
+    def __init__(self, model, source_file, target_file, raw_source_file, raw_target_file, num_sentences=400):
+        self.model = model
+        self.source_file = source_file
+        self.target_file = target_file
+        self.loader = LanguagePairLoader("de", "en", source_file, target_file)
+        self.extractor = DomainSpecificExtractor(source_file=raw_source_file, train_source_file=hp.source_file,
+                                                 train_vocab_file="train_vocab.pkl")
+        self.target_extractor = DomainSpecificExtractor(source_file=raw_target_file, train_source_file=hp.source_file,
+                                                        train_vocab_file="train_vocab_en.pkl")
+        self.scorer = Scorer()
+        self.scores = {}
+        self.num_sentences = num_sentences
 
-    stemmer = GermanStemmer()
-    sources = [" ".join([stemmer.stem(w) for w in s.split()]) for s in sources]
+        # Plot each metric
+        plt.style.use('seaborn-darkgrid')
+        self.palette = plt.get_cmap('Set1')
 
-    for sentence in sources:
-        if "dokument" in sentence:
-            print(sentence)
+    def run(self):
+        _, _, pairs = self.loader.load()
+        random.seed(101)
+        random.shuffle(pairs)
+        pairs = pairs[:self.num_sentences]
 
-    stop_words = stopwords.words("german") + ["&quot;", "sagte", "dass"]
+        sources, targets, translations = [p[0] for p in pairs], [p[1] for p in pairs], []
 
-    text = " ".join([s.replace("@@ ", "").lower() for s in sources])
-    # text = " ".join([stemmer.stem(word) for word in text.split(" ")])
+        keyphrases = self.extractor.extract_keyphrases(n_results=50)
+        target_keyphrases = self.target_extractor.extract_keyphrases(n_results=50)
 
+        for i, pair in enumerate(pairs):
+            if i % 10 == 0:
+                print("Translated {} of {}".format(i, len(pairs)))
+            translation, attn, _ = self.model.translate(pair[0])
+            translations.append(" ".join(translation[:-1]))
 
-    keyphrases = keywords.keywords(text, language="german", split="True", words=10, scores=True)
+            metrics_scores = self.scorer.compute_scores(pair[0], " ".join(translation[:-1]), attn, keyphrases)
+            for metric in metrics_scores:
+                if metric not in self.scores:
+                    self.scores[metric] = []
+                self.scores[metric].append(metrics_scores[metric])
 
-    return keyphrases
+        x = range(0, 50 + step_size, step_size)
 
+        metrics = ["keyphrase_score", "random", "length", "confidence"]
+        n_iters = 5
+        for i, metric in enumerate(metrics):
+            avg_bleus = [0 for _ in range(1, 100 // (step_size * 2) + 1)]
+            for j in range(n_iters):
+                delta_bleus = self.evaluate_metric(sources, targets, translations,
+                                                   self.scores[metric] if metric != "random" else [],
+                                                   metric,
+                                                   target_keyphrases,
+                                                   need_sort=True,
+                                                   reverse=sort_direction[metric] if metric != random else True)
+                avg_bleus = [avg + delta for (avg, delta) in zip(avg_bleus, delta_bleus)]
 
-def get_lda_topics(sources):
-    from nltk.tokenize import RegexpTokenizer
-    from nltk.corpus import stopwords
-    from gensim import corpora, models
-    import gensim
+            delta_bleus = [0] + [b / n_iters * 100 for b in delta_bleus]
+            plt.plot(x, delta_bleus, marker='', color=self.palette(i), linewidth=1, alpha=0.9, label=metric)
 
-    stop_words = stopwords.words("german") + ["&quot;", "sagte", "dass"]
-    texts = [s.replace("@@ ", "").lower().split(" ") for s in sources]
-    texts = [list(filter(lambda word: word.lower() not in stop_words and len(word) > 2, s)) for s in texts]
+    def evaluate_metric(self, sources, targets, translations, scores, metric, target_keyphrases, need_sort=True,
+                        reverse=False):
+        print("Evaluating {}".format(metric))
+        # Sort by metric
+        if need_sort:
+            sorted_sentences = [(x, y, z) for _, x, y, z in
+                                sorted(zip(scores, sources, targets, translations), reverse=reverse)]
+            sources, targets, translations = zip(*sorted_sentences)
 
-    # turn our tokenized documents into a id <-> term dictionary
-    dictionary = corpora.Dictionary(texts)
+        # Compute base BLEU
+        base_bleu = compute_bleu(targets, translations)
+        print("Base BLEU: {}".format(base_bleu))
 
-    # convert tokenized documents into a document-term matrix
-    corpus = [dictionary.doc2bow(text) for text in texts]
+        bleu_scores = [base_bleu]
 
-    # generate LDA model
-    ldamodel = gensim.models.ldamodel.LdaModel(corpus, num_topics=10, id2word=dictionary, passes=50)
+        delta_bleus = []
+        delta_recalls = []
+        delta_precisions = []
 
-    print(ldamodel.print_topics(num_topics=10, num_words=5))
+        n = len(sources)
 
+        for i in range(1, 100 // (step_size * 2) + 1):
+            print("Correcting first {}% sentences".format(i * step_size))
 
-def get_keyphrases(sources):
-    sources = [s.replace("@@ ", "") for s in sources]
-    r = Rake(language="german", max_length=1)
+            curr_end = i * n // (100 // step_size)
 
-    # Extraction given the list of strings where each string is a sentence.
-    r.extract_keywords_from_sentences(sources)
+            corrected_translations = list(translations)
+            # 'Correct' first i sentences
+            corrected_translations[: curr_end] = targets[: curr_end]
 
-    # To get keyword phrases ranked highest to lowest.
-    return r.get_ranked_phrases_with_scores()
+            # Compute BLEU before training for comparison
+            pretraining_bleu = compute_bleu(targets, corrected_translations)
+            bleu_scores.append(pretraining_bleu)
+
+            prerecall = unigram_recall(target_keyphrases, targets[curr_end:], corrected_translations[curr_end:])
+            preprecision = unigram_precision(target_keyphrases, targets[curr_end:], corrected_translations[curr_end:])
+            print("Pre Recall {}".format(prerecall))
+            print("Pre Precision {}".format(preprecision))
+
+            pre_gleu_scores = gleu_distr(sources, targets[curr_end:], translations[curr_end:])
+            print("Pre-Training BLEU: {}".format(pretraining_bleu))
+
+            # Now train, and compute BLEU again
+            retrain_iters(seq2seq_model,
+                          list((a, b) for a, b in zip(sources[: curr_end], corrected_translations[: curr_end])), [],
+                          batch_size=n // (100 // step_size),
+                          n_epochs=20, learning_rate=0.00001, weight_decay=1e-3)
+
+            # Translate trained model
+            for j in range(curr_end, len(sources)):
+                translation, _, _ = seq2seq_model.translate(sources[j])
+                corrected_translations[j] = " ".join(translation[:-1])
+
+            reload_model(seq2seq_model)
+
+            # Compute posttraining BLEU
+            posttraining_bleu = compute_bleu(targets, corrected_translations)
+            post_gleu_scores = gleu_distr(sources, targets[curr_end:], corrected_translations[curr_end:])
+
+            postrecall = unigram_recall(target_keyphrases, targets[curr_end:], corrected_translations[curr_end:])
+            delta_recalls.append(postrecall - prerecall)
+            print("Post Recall {}".format(postrecall))
+            postprecision = unigram_precision(target_keyphrases, targets[curr_end:], corrected_translations[curr_end:])
+            delta_precisions.append(postprecision - preprecision)
+            print("Post Precision {}".format(postprecision))
+
+            diff_gleu = [post - pre for (post, pre) in zip(post_gleu_scores, pre_gleu_scores)]
+            diff_gleu = sorted(diff_gleu, reverse=True)
+
+            print("Post-Training BLEU: {}".format(posttraining_bleu))
+
+            delta_bleu = posttraining_bleu - pretraining_bleu
+            print("Delta BLEU {}".format(delta_bleu))
+            print()
+
+            delta_bleus.append(delta_bleu)
+
+        print("Delta Recalls")
+        print(delta_recalls)
+        print("Delta Precisions")
+        print(delta_precisions)
+        return delta_bleus
+
+    def plot(self):
+        plt.xlabel('% Corrected Sentences')
+        plt.ylabel('Δ BLEU')
+        # Add titles
+        plt.title("BLEU Change for Metrics", loc='center', fontsize=12, fontweight=0)
+        # Add legend
+        plt.legend(loc='upper left', ncol=1)
+        plt.savefig('bleu_deltas.png')
 
 
 def unigram_recall(rare_words, targets, translations):
@@ -267,74 +281,13 @@ def unigram_precision(rare_words, targets, translations):
     return numer / denom
 
 
-loader = LanguagePairLoader("de", "en", "data/medical.bpe.de", "data/medical.bpe.en")
-# loader = LanguagePairLoader("de", "en", hp.source_test_file, hp.target_test_file)
-_, _, pairs = loader.load()
-
-random.shuffle(pairs)
-pairs = pairs[:400]
-
 seq2seq_model = load_model()
+exp = MetricExperiment(seq2seq_model, "data/medical.bpe.de", "data/medical.bpe.en", "data/medical.tok.de",
+                       "data/medical.tok.en", num_sentences=1000)
+exp.run()
+exp.plot()
 
-# Translate sources
-sources, targets, translations = [p[0] for p in pairs], [p[1] for p in pairs], []
-scores = {}
-scorer = Scorer()
-
-print("Key phrases")
-extractor = DomainSpecificExtractor(source_file="data/medical.tok.de", train_source_file=hp.source_file,
-                                    train_vocab_file="train_vocab.pkl")
-keyphrases = extractor.extract_keyphrases(n_results=50)
-
-target_extractor = DomainSpecificExtractor(source_file="data/medical.tok.en", train_source_file=hp.source_file,
-                                           train_vocab_file="train_vocab_en.pkl")
-target_keyphrases = target_extractor.extract_keyphrases()
-print(target_keyphrases)
-
-for i, pair in enumerate(pairs):
-    if i % 10 == 0:
-        print("Translated {} of {}".format(i, len(pairs)))
-    translation, attn, _ = seq2seq_model.translate(pair[0])
-    translations.append(" ".join(translation[:-1]))
-
-    metrics_scores = scorer.compute_scores(pair[0], " ".join(translation[:-1]), attn, keyphrases)
-    for metric in metrics_scores:
-        if metric not in scores:
-            scores[metric] = []
-        scores[metric].append(metrics_scores[metric])
-
-# Plot each metric
-plt.style.use('seaborn-darkgrid')
-palette = plt.get_cmap('Set1')
-
-x = range(0, 50 + step_size, step_size)
-
-sort_direction = {"coverage_penalty": True,
-                  "coverage_deviation_penalty": True,
-                  "confidence": False,
-                  "length": True,
-                  "ap_in": True,
-                  "ap_out": True,
-                  "keyphrase_score": False,
-                  }
-metrics = ["keyphrase_score"]
-n_iters = 1
-for i, metric in enumerate(metrics):
-    avg_bleus = [0 for _ in range(1, 100 // (step_size * 2) + 1)]
-    for j in range(n_iters):
-        delta_bleus = evaluate_metric(sources, targets, translations, scores[metric], metric,
-                                      reverse=not sort_direction[metric])
-        avg_bleus = [avg + delta for (avg, delta) in zip(avg_bleus, delta_bleus)]
-
-    delta_bleus = [0] + [b / n_iters * 100 for b in delta_bleus]
-
-    plt.plot(x, delta_bleus, marker='', color=palette(i), linewidth=1, alpha=0.9, label=metric)
-
-# plt.figure(101)
-# plt.legend(loc='upper left', ncol=1)
-# plt.savefig("bleu_correction.png")
-# plt.clf()
-
+'''
 # Shuffle
 avg_bleus = [0 for _ in range(1, 100 // (step_size * 2) + 1)]
 for j in range(n_iters):
@@ -355,3 +308,4 @@ plt.title("BLEU Change for Metrics", loc='center', fontsize=12, fontweight=0)
 # Add legend
 plt.legend(loc='upper left', ncol=1)
 plt.savefig('bleu_deltas.png')
+'''
