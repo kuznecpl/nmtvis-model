@@ -118,17 +118,19 @@ class DateConverterLoader:
 
 
 class LanguagePairLoader:
-    def __init__(self, source_lang, target_lang, source_file=hp.source_file, target_file=hp.target_file):
+    def __init__(self, source_lang, target_lang, source_file=hp.source_file, target_file=hp.target_file, trim=True):
         self.source_lang = source_lang
         self.target_lang = target_lang
         self.source_file = source_file
         self.target_file = target_file
+        self.trim = trim
 
     def load(self):
         input_lang, output_lang, pairs = self.prepare_data()
 
-        input_lang.trim_top()
-        output_lang.trim_top()
+        if self.trim:
+            input_lang.trim_top()
+            output_lang.trim_top()
 
         # pairs = self.filter(input_lang, output_lang, pairs)
 

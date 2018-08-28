@@ -1,7 +1,7 @@
 import hp
 
 hp.MAX_LENGTH = 100
-hp.print_loss_every_iters = 5
+hp.print_loss_every_iters = 1
 
 from models import Seq2SeqModel, LSTMAttnDecoderRNN, LSTMEncoderRNN
 import pickle
@@ -22,7 +22,7 @@ plt.style.use('seaborn-darkgrid')
 from nltk.translate import gleu_score
 from keyphrase_extractor import DomainSpecificExtractor
 
-step_size = 5
+step_size = 100
 
 
 def load_model():
@@ -115,13 +115,25 @@ class MetricExperiment:
         self.scores = {}
         self.num_sentences = num_sentences
 
+        self.metric_bleu_scores = {}
+        self.metric_gleu_scores = {}
+        self.metric_precisions = {}
+        self.metric_recalls = {}
+
         # Plot each metric
         plt.style.use('seaborn-darkgrid')
-        self.palette = plt.get_cmap('Set1')
+        self.palette = sns.color_palette()
+
+    def save_data(self):
+        pickle.dump(self.metric_bleu_scores, open("metric_bleu_scores.pkl", "wb"))
+        pickle.dump(self.metric_gleu_scores, open("metric_gleu_scores.pkl", "wb"))
+        pickle.dump(self.metric_precisions, open("metric_precisions.pkl", "wb"))
+        pickle.dump(self.metric_recalls, open("metric_recalls.pkl", "wb"))
+        print("Saved all scores")
 
     def run(self):
         _, _, pairs = self.loader.load()
-        random.seed(101)
+        random.seed(100)
         random.shuffle(pairs)
         pairs = pairs[:self.num_sentences]
 
@@ -142,23 +154,36 @@ class MetricExperiment:
                     self.scores[metric] = []
                 self.scores[metric].append(metrics_scores[metric])
 
-        x = range(0, 50 + step_size, step_size)
+        x = range(0, len(pairs) // 2)
 
-        metrics = ["keyphrase_score", "random", "length", "confidence"]
-        n_iters = 5
+        metrics = [
+            "coverage_penalty",
+            "coverage_deviation_penalty",
+            "confidence",
+            "length",
+            "ap_in",
+            "ap_out",
+            "random"
+        ]
+        n_iters = 1
         for i, metric in enumerate(metrics):
             avg_bleus = [0 for _ in range(1, 100 // (step_size * 2) + 1)]
+            self.metric_bleu_scores[metric] = []
+            self.metric_gleu_scores[metric] = []
+            self.metric_precisions[metric] = []
+            self.metric_recalls[metric] = []
             for j in range(n_iters):
                 delta_bleus = self.evaluate_metric(sources, targets, translations,
                                                    self.scores[metric] if metric != "random" else [],
                                                    metric,
                                                    target_keyphrases,
-                                                   need_sort=True,
-                                                   reverse=sort_direction[metric] if metric != random else True)
+                                                   need_sort=True if metric != "random" else False,
+                                                   reverse=sort_direction[metric] if metric != "random" else True)
                 avg_bleus = [avg + delta for (avg, delta) in zip(avg_bleus, delta_bleus)]
 
-            delta_bleus = [0] + [b / n_iters * 100 for b in delta_bleus]
-            plt.plot(x, delta_bleus, marker='', color=self.palette(i), linewidth=1, alpha=0.9, label=metric)
+            delta_bleus = [0] + [b / n_iters for b in delta_bleus]
+            plt.plot(x, delta_bleus, marker='', linestyle="--", color=self.palette[i], linewidth=1, alpha=0.9,
+                     label=metric)
 
     def evaluate_metric(self, sources, targets, translations, scores, metric, target_keyphrases, need_sort=True,
                         reverse=False):
@@ -180,18 +205,20 @@ class MetricExperiment:
         delta_precisions = []
 
         n = len(sources)
+        encoder_optimizer_state, decoder_optimizer_state = None, None
 
-        for i in range(1, 100 // (step_size * 2) + 1):
-            print("Correcting first {}% sentences".format(i * step_size))
+        for i in range(1, n // 2):
+            print("Correcting first {} sentences".format(i))
 
-            curr_end = i * n // (100 // step_size)
+            curr_end = i
 
             corrected_translations = list(translations)
             # 'Correct' first i sentences
-            corrected_translations[: curr_end] = targets[: curr_end]
+            corrected_translations[: curr_end] = targets[:curr_end]
 
             # Compute BLEU before training for comparison
-            pretraining_bleu = compute_bleu(targets, corrected_translations)
+            pretraining_bleu = compute_bleu(targets[curr_end:], corrected_translations[curr_end:])
+            pretraining_gleu = compute_avg_gleu(targets[curr_end:], corrected_translations[curr_end:])
             bleu_scores.append(pretraining_bleu)
 
             prerecall = unigram_recall(target_keyphrases, targets[curr_end:], corrected_translations[curr_end:])
@@ -203,20 +230,25 @@ class MetricExperiment:
             print("Pre-Training BLEU: {}".format(pretraining_bleu))
 
             # Now train, and compute BLEU again
-            retrain_iters(seq2seq_model,
-                          list((a, b) for a, b in zip(sources[: curr_end], corrected_translations[: curr_end])), [],
-                          batch_size=n // (100 // step_size),
-                          n_epochs=20, learning_rate=0.00001, weight_decay=1e-3)
+            encoder_optimizer_state, decoder_optimizer_state = retrain_iters(seq2seq_model,
+                                                                             [[sources[i - 1],
+                                                                               corrected_translations[i - 1]]], [],
+                                                                             batch_size=1,
+                                                                             encoder_optimizer_state=encoder_optimizer_state,
+                                                                             decoder_optimizer_state=decoder_optimizer_state,
+                                                                             n_epochs=1, learning_rate=0.0001,
+                                                                             weight_decay=1e-3)
 
             # Translate trained model
             for j in range(curr_end, len(sources)):
                 translation, _, _ = seq2seq_model.translate(sources[j])
                 corrected_translations[j] = " ".join(translation[:-1])
 
-            reload_model(seq2seq_model)
+            # reload_model(seq2seq_model)
 
             # Compute posttraining BLEU
-            posttraining_bleu = compute_bleu(targets, corrected_translations)
+            posttraining_bleu = compute_bleu(targets[curr_end:], corrected_translations[curr_end:])
+            posttraining_gleu = compute_avg_gleu(targets[curr_end:], corrected_translations[curr_end:])
             post_gleu_scores = gleu_distr(sources, targets[curr_end:], corrected_translations[curr_end:])
 
             postrecall = unigram_recall(target_keyphrases, targets[curr_end:], corrected_translations[curr_end:])
@@ -226,16 +258,21 @@ class MetricExperiment:
             delta_precisions.append(postprecision - preprecision)
             print("Post Precision {}".format(postprecision))
 
-            diff_gleu = [post - pre for (post, pre) in zip(post_gleu_scores, pre_gleu_scores)]
-            diff_gleu = sorted(diff_gleu, reverse=True)
-
             print("Post-Training BLEU: {}".format(posttraining_bleu))
 
-            delta_bleu = posttraining_bleu - pretraining_bleu
+            delta_bleu = posttraining_bleu / pretraining_bleu * 100 - 100
+
+            self.metric_bleu_scores[metric].append((pretraining_bleu, posttraining_bleu))
+            self.metric_gleu_scores[metric].append((pretraining_gleu, posttraining_gleu))
+            self.metric_recalls[metric].append((prerecall, postrecall))
+            self.metric_precisions[metric].append((preprecision, postprecision))
+
             print("Delta BLEU {}".format(delta_bleu))
             print()
 
             delta_bleus.append(delta_bleu)
+
+        reload_model(seq2seq_model)
 
         print("Delta Recalls")
         print(delta_recalls)
@@ -249,7 +286,7 @@ class MetricExperiment:
         # Add titles
         plt.title("BLEU Change for Metrics", loc='center', fontsize=12, fontweight=0)
         # Add legend
-        plt.legend(loc='upper left', ncol=1)
+        plt.legend(loc='lower right', ncol=1)
         plt.savefig('bleu_deltas.png')
 
 
@@ -283,9 +320,10 @@ def unigram_precision(rare_words, targets, translations):
 
 seq2seq_model = load_model()
 exp = MetricExperiment(seq2seq_model, "data/medical.bpe.de", "data/medical.bpe.en", "data/medical.tok.de",
-                       "data/medical.tok.en", num_sentences=1000)
+                       "data/medical.tok.en", num_sentences=500)
 exp.run()
 exp.plot()
+exp.save_data()
 
 '''
 # Shuffle

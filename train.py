@@ -119,14 +119,16 @@ def train_iters(seq2seq_model, pairs,
     input_lang = seq2seq_model.input_lang
     output_lang = seq2seq_model.output_lang
 
+    optim_type = optim.Adam if not retrain else optim.Adagrad
+
     # Initialize optimizers and criterion
     if not retrain:
-        encoder_optimizer = optim.Adam(filter(lambda p: p.requires_grad, encoder.parameters()), lr=learning_rate,
+        encoder_optimizer = optim_type(filter(lambda p: p.requires_grad, encoder.parameters()), lr=learning_rate,
                                        weight_decay=weight_decay)
     else:
         encoder_optimizer = None
 
-    decoder_optimizer = optim.Adam(filter(lambda p: p.requires_grad, decoder.parameters()),
+    decoder_optimizer = optim_type(filter(lambda p: p.requires_grad, decoder.parameters()),
                                    lr=learning_rate * decoder_learning_ratio, weight_decay=weight_decay)
 
     if encoder_optimizer_state:
@@ -224,10 +226,13 @@ def train_iters(seq2seq_model, pairs,
                 "eval_loss": eval_loss,
                 "bleu_scores": bleu_scores,
                 "max_length": hp.MAX_LENGTH,
-                "min_length": hp.MIN_LENGTH
+                "min_length": hp.MIN_LENGTH,
+                "time": as_minutes(time.time() - start)
             }, hp.checkpoint_name)
 
         print("Avg. Training Loss: %.2f Avg. Evaluation Loss: %.2f" % (avg_training_loss, avg_evaluation_loss))
+
+    return encoder_optimizer.state_dict() if encoder_optimizer else None, decoder_optimizer.state_dict()
 
 
 def eval(input_batches, input_lengths, target_batches, target_lengths, encoder, decoder, criterion):
@@ -293,7 +298,9 @@ def retrain_iters(seq2seq_model, pairs,
                   learning_rate=hp.learning_rate,
                   decoder_learning_ratio=hp.decoder_learning_ratio,
                   batch_size=hp.batch_size,
-                  weight_decay=1e-5):
+                  weight_decay=1e-5,
+                  encoder_optimizer_state=None,
+                  decoder_optimizer_state=None):
     encoder, decoder = seq2seq_model.encoder, seq2seq_model.decoder
 
     encoder.train(True)
@@ -301,14 +308,17 @@ def retrain_iters(seq2seq_model, pairs,
 
     for param in encoder.parameters():
         param.requires_grad = False
-    for param in decoder.parameters():
-        param.requires_grad = False
+        # for param in decoder.parameters():
+        # param.requires_grad = False
 
-    for param in decoder.out.parameters():
-        param.requires_grad = True
+        # for param in decoder.out.parameters():
+        # param.requires_grad = True
 
-    train_iters(seq2seq_model, pairs, eval_pairs, n_epochs, print_every, evaluate_every,
-                save_every, learning_rate, decoder_learning_ratio, batch_size, start_epoch=1, retrain=True)
+    return train_iters(seq2seq_model, pairs, eval_pairs, n_epochs, print_every, evaluate_every,
+                       save_every, learning_rate, decoder_learning_ratio, batch_size,
+                       encoder_optimizer_state=encoder_optimizer_state,
+                       decoder_optimizer_state=decoder_optimizer_state,
+                       start_epoch=1, retrain=True)
 
 
 def batch(iterable, n=1):

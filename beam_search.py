@@ -226,7 +226,7 @@ class BeamSearch:
                     break
             steps += 1
 
-        print("Beam Search found {} hypotheses for beam_size {}".format(len(result), self.beam_size))
+        #print("Beam Search found {} hypotheses for beam_size {}".format(len(result), self.beam_size))
         res = self._best_hyps(result, normalize=True)
         if res:
             res[0].is_golden = True
