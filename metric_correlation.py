@@ -73,17 +73,36 @@ class CorrelationExperiment:
         f.set_figwidth(12)
         axes = np.reshape(axes, (6,))
 
-        for i, metric in enumerate(self.metric_to_gleu):
+        metrics = [
+            "coverage_penalty",
+            "coverage_deviation_penalty",
+            "confidence",
+            "length",
+            "ap_in",
+            "ap_out"
+        ]
+
+        for i, metric in enumerate(metrics):
             x, y = [], []
             x_min = float('inf')
             x_max = float('-inf')
+
+            x_temp = []
+
             for score in self.metric_to_gleu[metric]:
+                values = self.metric_to_gleu[metric][score]
+                x_temp += [score] * len(values)
+
+            for score in self.metric_to_gleu[metric]:
+                if score > np.percentile(x_temp, 10) and score < np.percentile(x_temp, 90):
+                    pass
                 values = self.metric_to_gleu[metric][score]
                 x_min = min(x_min, score)
                 x_max = max(x_max, score)
                 x += [score] * len(values)
                 y += values
                 # plt.scatter([score] * len(values), values, color=palette(0), alpha=0.5)
+
             b, m = P.polyfit(x, y, 1)
             axes[i].set_ylim(-0.1, 1.1)
             if metric == "ap_out":
@@ -110,8 +129,16 @@ class CorrelationExperiment:
         axes = np.reshape(axes, (6,))
 
         bins_map = {"length": 60}
+        metrics = [
+            "coverage_penalty",
+            "coverage_deviation_penalty",
+            "confidence",
+            "length",
+            "ap_in",
+            "ap_out"
+        ]
 
-        for i, metric in enumerate(self.metric_to_gleu):
+        for i, metric in enumerate(metrics):
             metric_scores = []
             for value in self.metric_to_gleu[metric]:
                 metric_scores += len(self.metric_to_gleu[metric][value]) * [value]
@@ -160,8 +187,6 @@ class CorrelationExperiment:
             scores = self.scorer.compute_scores(pair[0], " ".join(translation), attn, keyphrases)
 
             for metric in scores:
-                if metric == "length" or metric == "keyphrase_score":
-                    continue
                 if metric == "coverage_penalty" and scores[metric] > 80:
                     continue
 
@@ -176,7 +201,8 @@ class CorrelationExperiment:
 
 seq2seq_model = load_model()
 
-exp1 = CorrelationExperiment(seq2seq_model, hp.source_test_file, hp.target_test_file, num_sentences=500)
+exp1 = CorrelationExperiment(seq2seq_model, "data/medical.bpe.de", "data/medical.bpe.en", num_sentences=500)
+# exp1 = CorrelationExperiment(seq2seq_model, hp.source_test_file, hp.target_test_file, num_sentences=500)
 exp1.run()
 exp1.plot_distr("metrics_dist.png")
-exp1.plot_correlation("corr.png")
+exp1.plot_correlation("corr_medical.png")

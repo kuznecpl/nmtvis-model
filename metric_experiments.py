@@ -1,5 +1,6 @@
 import hp
 
+hp.batch_size = 128
 hp.MAX_LENGTH = 100
 hp.print_loss_every_iters = 1
 
@@ -97,12 +98,26 @@ sort_direction = {"coverage_penalty": True,
                   "length": True,
                   "ap_in": True,
                   "ap_out": True,
-                  "keyphrase_score": False,
+                  "keyphrase_score": True,
                   }
 
 
+def find_improved_sentences(targets, base_sentences, train_sentences):
+    for target, base_sentence, train_sentence in zip(targets, base_sentences, train_sentences):
+        base_gleu = compute_gleu(target, base_sentence)
+        train_gleu = compute_gleu(target, train_sentence)
+
+        if train_gleu > base_gleu:
+            print()
+            print("Target: {}".format(target))
+            print("Base: {}".format(base_sentence))
+            print("<")
+            print("Trained: {}".format(train_sentence))
+
+
 class MetricExperiment:
-    def __init__(self, model, source_file, target_file, raw_source_file, raw_target_file, num_sentences=400):
+    def __init__(self, model, source_file, target_file, raw_source_file, raw_target_file, num_sentences=400,
+                 batch_translate=True):
         self.model = model
         self.source_file = source_file
         self.target_file = target_file
@@ -114,6 +129,7 @@ class MetricExperiment:
         self.scorer = Scorer()
         self.scores = {}
         self.num_sentences = num_sentences
+        self.batch_translate = batch_translate
 
         self.metric_bleu_scores = {}
         self.metric_gleu_scores = {}
@@ -125,10 +141,11 @@ class MetricExperiment:
         self.palette = sns.color_palette()
 
     def save_data(self):
-        pickle.dump(self.metric_bleu_scores, open("metric_bleu_scores.pkl", "wb"))
-        pickle.dump(self.metric_gleu_scores, open("metric_gleu_scores.pkl", "wb"))
-        pickle.dump(self.metric_precisions, open("metric_precisions.pkl", "wb"))
-        pickle.dump(self.metric_recalls, open("metric_recalls.pkl", "wb"))
+        prefix = "batch_" if self.batch_translate else "beam_"
+        pickle.dump(self.metric_bleu_scores, open(prefix + "metric_bleu_scores.pkl", "wb"))
+        pickle.dump(self.metric_gleu_scores, open(prefix + "metric_gleu_scores.pkl", "wb"))
+        pickle.dump(self.metric_precisions, open(prefix + "metric_precisions.pkl", "wb"))
+        pickle.dump(self.metric_recalls, open(prefix + "metric_recalls.pkl", "wb"))
         print("Saved all scores")
 
     def run(self):
@@ -140,6 +157,7 @@ class MetricExperiment:
         sources, targets, translations = [p[0] for p in pairs], [p[1] for p in pairs], []
 
         keyphrases = self.extractor.extract_keyphrases(n_results=50)
+        print(keyphrases)
         target_keyphrases = self.target_extractor.extract_keyphrases(n_results=50)
 
         for i, pair in enumerate(pairs):
@@ -154,6 +172,9 @@ class MetricExperiment:
                     self.scores[metric] = []
                 self.scores[metric].append(metrics_scores[metric])
 
+        if self.batch_translate:
+            translations = [t[:-6] for t in self.model.batch_translate([pair[0] for pair in pairs])]
+
         x = range(0, len(pairs) // 2)
 
         metrics = [
@@ -163,7 +184,8 @@ class MetricExperiment:
             "length",
             "ap_in",
             "ap_out",
-            "random"
+            "random",
+            "keyphrase_score"
         ]
         n_iters = 1
         for i, metric in enumerate(metrics):
@@ -173,78 +195,80 @@ class MetricExperiment:
             self.metric_precisions[metric] = []
             self.metric_recalls[metric] = []
             for j in range(n_iters):
-                delta_bleus = self.evaluate_metric(sources, targets, translations,
-                                                   self.scores[metric] if metric != "random" else [],
-                                                   metric,
-                                                   target_keyphrases,
-                                                   need_sort=True if metric != "random" else False,
-                                                   reverse=sort_direction[metric] if metric != "random" else True)
-                avg_bleus = [avg + delta for (avg, delta) in zip(avg_bleus, delta_bleus)]
+                self.evaluate_metric(sources, targets, translations,
+                                     self.scores[metric] if metric != "random" else [],
+                                     metric,
+                                     target_keyphrases,
+                                     need_sort=True if metric != "random" else False,
+                                     reverse=sort_direction[metric] if metric != "random" else True)
 
-            delta_bleus = [0] + [b / n_iters for b in delta_bleus]
-            plt.plot(x, delta_bleus, marker='', linestyle="--", color=self.palette[i], linewidth=1, alpha=0.9,
-                     label=metric)
+                # plt.plot(x, delta_bleus, marker='', linestyle="--", color=self.palette[i], linewidth=1, alpha=0.9,
+                #        label=metric)
+            self.save_data()
+
+    def shuffle_list(self, *ls):
+        l = list(zip(*ls))
+
+        random.shuffle(l)
+        return zip(*l)
 
     def evaluate_metric(self, sources, targets, translations, scores, metric, target_keyphrases, need_sort=True,
                         reverse=False):
         print("Evaluating {}".format(metric))
+        base_bleu = compute_bleu(targets, translations)
+        print("Base BLEU: {}".format(base_bleu))
         # Sort by metric
         if need_sort:
             sorted_sentences = [(x, y, z) for _, x, y, z in
                                 sorted(zip(scores, sources, targets, translations), reverse=reverse)]
             sources, targets, translations = zip(*sorted_sentences)
-
-        # Compute base BLEU
-        base_bleu = compute_bleu(targets, translations)
-        print("Base BLEU: {}".format(base_bleu))
-
-        bleu_scores = [base_bleu]
-
-        delta_bleus = []
-        delta_recalls = []
-        delta_precisions = []
+        else:
+            sources, targets, translations = self.shuffle_list(sources, targets, translations)
 
         n = len(sources)
         encoder_optimizer_state, decoder_optimizer_state = None, None
 
+        print("Translations")
+        print(translations[:5])
+
         for i in range(1, n // 2):
+            print()
             print("Correcting first {} sentences".format(i))
 
             curr_end = i
-
             corrected_translations = list(translations)
-            # 'Correct' first i sentences
-            corrected_translations[: curr_end] = targets[:curr_end]
+
+            # prefix_bleu = compute_bleu(targets[:curr_end], translations[:curr_end])
 
             # Compute BLEU before training for comparison
-            pretraining_bleu = compute_bleu(targets[curr_end:], corrected_translations[curr_end:])
+            pretraining_bleu = compute_bleu(targets[curr_end:], translations[curr_end:])
             pretraining_gleu = compute_avg_gleu(targets[curr_end:], corrected_translations[curr_end:])
-            bleu_scores.append(pretraining_bleu)
 
             prerecall = unigram_recall(target_keyphrases, targets[curr_end:], corrected_translations[curr_end:])
             preprecision = unigram_precision(target_keyphrases, targets[curr_end:], corrected_translations[curr_end:])
-            print("Pre Recall {}".format(prerecall))
-            print("Pre Precision {}".format(preprecision))
-
             pre_gleu_scores = gleu_distr(sources, targets[curr_end:], translations[curr_end:])
-            print("Pre-Training BLEU: {}".format(pretraining_bleu))
 
+            print("Training Data: {}\n : {}\n".format(sources[i - 1], targets[i - 1]))
             # Now train, and compute BLEU again
-            encoder_optimizer_state, decoder_optimizer_state = retrain_iters(seq2seq_model,
+            encoder_optimizer_state, decoder_optimizer_state = retrain_iters(self.model,
                                                                              [[sources[i - 1],
-                                                                               corrected_translations[i - 1]]], [],
+                                                                               targets[i - 1]]], [],
                                                                              batch_size=1,
                                                                              encoder_optimizer_state=encoder_optimizer_state,
                                                                              decoder_optimizer_state=decoder_optimizer_state,
                                                                              n_epochs=1, learning_rate=0.0001,
                                                                              weight_decay=1e-3)
 
-            # Translate trained model
-            for j in range(curr_end, len(sources)):
-                translation, _, _ = seq2seq_model.translate(sources[j])
-                corrected_translations[j] = " ".join(translation[:-1])
+            if not self.batch_translate:
+                # Translate trained model
+                for j in range(curr_end, len(sources)):
+                    translation, _, _ = seq2seq_model.translate(sources[j])
+                    corrected_translations[j] = " ".join(translation[:-1])
+            else:
+                batch_translations = self.model.batch_translate(sources)[curr_end:]
+                corrected_translations[curr_end:] = [t[:-6] for t in batch_translations]
 
-            # reload_model(seq2seq_model)
+            # find_improved_sentences(targets[curr_end:], translations[curr_end:], corrected_translations[curr_end:])
 
             # Compute posttraining BLEU
             posttraining_bleu = compute_bleu(targets[curr_end:], corrected_translations[curr_end:])
@@ -252,13 +276,10 @@ class MetricExperiment:
             post_gleu_scores = gleu_distr(sources, targets[curr_end:], corrected_translations[curr_end:])
 
             postrecall = unigram_recall(target_keyphrases, targets[curr_end:], corrected_translations[curr_end:])
-            delta_recalls.append(postrecall - prerecall)
-            print("Post Recall {}".format(postrecall))
             postprecision = unigram_precision(target_keyphrases, targets[curr_end:], corrected_translations[curr_end:])
-            delta_precisions.append(postprecision - preprecision)
-            print("Post Precision {}".format(postprecision))
-
-            print("Post-Training BLEU: {}".format(posttraining_bleu))
+            print("Delta Recall {} -> {}".format(prerecall, postrecall))
+            print("Delta Precision {} -> {}".format(preprecision, postprecision))
+            print("Delta BLEU: {} -> {}".format(pretraining_bleu, posttraining_bleu))
 
             delta_bleu = posttraining_bleu / pretraining_bleu * 100 - 100
 
@@ -267,18 +288,8 @@ class MetricExperiment:
             self.metric_recalls[metric].append((prerecall, postrecall))
             self.metric_precisions[metric].append((preprecision, postprecision))
 
-            print("Delta BLEU {}".format(delta_bleu))
-            print()
-
-            delta_bleus.append(delta_bleu)
-
-        reload_model(seq2seq_model)
-
-        print("Delta Recalls")
-        print(delta_recalls)
-        print("Delta Precisions")
-        print(delta_precisions)
-        return delta_bleus
+        reload_model(self.model)
+        return None
 
     def plot(self):
         plt.xlabel('% Corrected Sentences')
@@ -319,8 +330,8 @@ def unigram_precision(rare_words, targets, translations):
 
 
 seq2seq_model = load_model()
-exp = MetricExperiment(seq2seq_model, "data/medical.bpe.de", "data/medical.bpe.en", "data/medical.tok.de",
-                       "data/medical.tok.en", num_sentences=500)
+exp = MetricExperiment(seq2seq_model, "data/khresmoi.bpe.de", "data/khresmoi.bpe.en", "data/khresmoi.tok.de",
+                       "data/khresmoi.tok.en", num_sentences=5000, batch_translate=False)
 exp.run()
 exp.plot()
 exp.save_data()
