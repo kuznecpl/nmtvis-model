@@ -117,7 +117,7 @@ def find_improved_sentences(targets, base_sentences, train_sentences):
 
 class MetricExperiment:
     def __init__(self, model, source_file, target_file, raw_source_file, raw_target_file, num_sentences=400,
-                 batch_translate=True):
+                 batch_translate=True, test_sentences=100):
         self.model = model
         self.source_file = source_file
         self.target_file = target_file
@@ -130,6 +130,8 @@ class MetricExperiment:
         self.scores = {}
         self.num_sentences = num_sentences
         self.batch_translate = batch_translate
+        self.test_sentences = test_sentences
+        self.evaluate_every = 10
 
         self.metric_bleu_scores = {}
         self.metric_gleu_scores = {}
@@ -141,7 +143,7 @@ class MetricExperiment:
         self.palette = sns.color_palette()
 
     def save_data(self):
-        prefix = "batch_" if self.batch_translate else "beam_"
+        prefix = "v2_batch_" if self.batch_translate else "v2_beam_"
         pickle.dump(self.metric_bleu_scores, open(prefix + "metric_bleu_scores.pkl", "wb"))
         pickle.dump(self.metric_gleu_scores, open(prefix + "metric_gleu_scores.pkl", "wb"))
         pickle.dump(self.metric_precisions, open(prefix + "metric_precisions.pkl", "wb"))
@@ -150,15 +152,16 @@ class MetricExperiment:
 
     def run(self):
         _, _, pairs = self.loader.load()
-        random.seed(100)
+        random.seed(2308)
         random.shuffle(pairs)
+
         pairs = pairs[:self.num_sentences]
 
         sources, targets, translations = [p[0] for p in pairs], [p[1] for p in pairs], []
 
-        keyphrases = self.extractor.extract_keyphrases(n_results=50)
+        keyphrases = self.extractor.extract_keyphrases(n_results=100)
         print(keyphrases)
-        target_keyphrases = self.target_extractor.extract_keyphrases(n_results=50)
+        target_keyphrases = self.target_extractor.extract_keyphrases(n_results=100)
 
         for i, pair in enumerate(pairs):
             if i % 10 == 0:
@@ -172,8 +175,17 @@ class MetricExperiment:
                     self.scores[metric] = []
                 self.scores[metric].append(metrics_scores[metric])
 
+        for metric in self.scores:
+            self.scores[metric] = self.scores[metric][self.test_sentences:]
+
+        test_sources, test_targets, test_translations = sources[:self.test_sentences], targets[
+                                                                                       :self.test_sentences], translations[
+                                                                                                              :self.test_sentences]
+        sources, targets, translations = sources[self.test_sentences:], targets[self.test_sentences:], translations[
+                                                                                                       self.test_sentences:]
+
         if self.batch_translate:
-            translations = [t[:-6] for t in self.model.batch_translate([pair[0] for pair in pairs])]
+            translations = [t[:-6] for t in self.model.batch_translate(sources)]
 
         x = range(0, len(pairs) // 2)
 
@@ -199,6 +211,7 @@ class MetricExperiment:
                                      self.scores[metric] if metric != "random" else [],
                                      metric,
                                      target_keyphrases,
+                                     test_sources, test_targets, test_translations,
                                      need_sort=True if metric != "random" else False,
                                      reverse=sort_direction[metric] if metric != "random" else True)
 
@@ -212,7 +225,9 @@ class MetricExperiment:
         random.shuffle(l)
         return zip(*l)
 
-    def evaluate_metric(self, sources, targets, translations, scores, metric, target_keyphrases, need_sort=True,
+    def evaluate_metric(self, sources, targets, translations, scores, metric, target_keyphrases,
+                        test_sources, test_targets, test_translations,
+                        need_sort=True,
                         reverse=False):
         print("Evaluating {}".format(metric))
         base_bleu = compute_bleu(targets, translations)
@@ -231,22 +246,21 @@ class MetricExperiment:
         print("Translations")
         print(translations[:5])
 
-        for i in range(1, n // 2):
+        for i in range(1, n + 1):
             print()
-            print("Correcting first {} sentences".format(i))
+            print("Correcting {} of {} sentences".format(i, n))
 
             curr_end = i
-            corrected_translations = list(translations)
-
-            # prefix_bleu = compute_bleu(targets[:curr_end], translations[:curr_end])
 
             # Compute BLEU before training for comparison
-            pretraining_bleu = compute_bleu(targets[curr_end:], translations[curr_end:])
-            pretraining_gleu = compute_avg_gleu(targets[curr_end:], corrected_translations[curr_end:])
+            # pretraining_bleu = compute_bleu(targets[curr_end:], translations[curr_end:])
+            # pretraining_gleu = compute_avg_gleu(targets[curr_end:], corrected_translations[curr_end:])
 
-            prerecall = unigram_recall(target_keyphrases, targets[curr_end:], corrected_translations[curr_end:])
-            preprecision = unigram_precision(target_keyphrases, targets[curr_end:], corrected_translations[curr_end:])
-            pre_gleu_scores = gleu_distr(sources, targets[curr_end:], translations[curr_end:])
+            pretraining_bleu = compute_bleu(test_targets, test_translations)
+            pretraining_gleu = compute_avg_gleu(test_targets, test_translations)
+
+            prerecall = unigram_recall(target_keyphrases, test_targets, test_translations)
+            preprecision = unigram_precision(target_keyphrases, test_targets, test_translations)
 
             print("Training Data: {}\n : {}\n".format(sources[i - 1], targets[i - 1]))
             # Now train, and compute BLEU again
@@ -259,24 +273,27 @@ class MetricExperiment:
                                                                              n_epochs=1, learning_rate=0.0001,
                                                                              weight_decay=1e-3)
 
+            if (i - 1) % self.evaluate_every != 0:
+                continue
+
+            corrected_translations = []
             if not self.batch_translate:
                 # Translate trained model
-                for j in range(curr_end, len(sources)):
-                    translation, _, _ = seq2seq_model.translate(sources[j])
-                    corrected_translations[j] = " ".join(translation[:-1])
+                for j in range(0, len(test_sources)):
+                    translation, _, _ = seq2seq_model.translate(test_sources[j])
+                    corrected_translations.append(" ".join(translation[:-1]))
             else:
-                batch_translations = self.model.batch_translate(sources)[curr_end:]
-                corrected_translations[curr_end:] = [t[:-6] for t in batch_translations]
+                batch_translations = self.model.batch_translate(test_sources)
+                corrected_translations = [t[:-6] for t in batch_translations]
 
             # find_improved_sentences(targets[curr_end:], translations[curr_end:], corrected_translations[curr_end:])
 
             # Compute posttraining BLEU
-            posttraining_bleu = compute_bleu(targets[curr_end:], corrected_translations[curr_end:])
-            posttraining_gleu = compute_avg_gleu(targets[curr_end:], corrected_translations[curr_end:])
-            post_gleu_scores = gleu_distr(sources, targets[curr_end:], corrected_translations[curr_end:])
+            posttraining_bleu = compute_bleu(test_targets, corrected_translations)
+            posttraining_gleu = compute_avg_gleu(test_targets, corrected_translations)
 
-            postrecall = unigram_recall(target_keyphrases, targets[curr_end:], corrected_translations[curr_end:])
-            postprecision = unigram_precision(target_keyphrases, targets[curr_end:], corrected_translations[curr_end:])
+            postrecall = unigram_recall(target_keyphrases, test_targets, corrected_translations)
+            postprecision = unigram_precision(target_keyphrases, test_targets, corrected_translations)
             print("Delta Recall {} -> {}".format(prerecall, postrecall))
             print("Delta Precision {} -> {}".format(preprecision, postprecision))
             print("Delta BLEU: {} -> {}".format(pretraining_bleu, posttraining_bleu))
@@ -331,7 +348,7 @@ def unigram_precision(rare_words, targets, translations):
 
 seq2seq_model = load_model()
 exp = MetricExperiment(seq2seq_model, "data/khresmoi.bpe.de", "data/khresmoi.bpe.en", "data/khresmoi.tok.de",
-                       "data/khresmoi.tok.en", num_sentences=5000, batch_translate=False)
+                       "data/khresmoi.tok.en", num_sentences=1000, batch_translate=False, test_sentences=300)
 exp.run()
 exp.plot()
 exp.save_data()

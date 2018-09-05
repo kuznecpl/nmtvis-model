@@ -405,76 +405,94 @@ class Seq2SeqModel:
         self.input_lang = input_lang
         self.output_lang = output_lang
 
-    def evaluate(self, sentence, max_length=MAX_LENGTH):
-        torch.set_grad_enabled(False)
-        input_words = sentence.split(" ") + [EOS_token]
-        input_seqs = [indexes_from_sentence(self.input_lang, sentence)]
-        input_lengths = [len(seq) for seq in input_seqs]
-        input_batches = Variable(torch.LongTensor(input_seqs)).transpose(0, 1)
+    def pad_seq(self, seq, max_length):
+        seq += [PAD_token for i in range(max_length - len(seq))]
+        return seq
 
+    def batch(self, iterable, n=1):
+        l = len(iterable)
+        for ndx in range(0, l, n):
+            yield iterable[ndx:min(ndx + n, l)]
+
+    def next_batch(self, batch_it):
+        input_seqs = []
+
+        # Choose random pairs
+        for pair in batch_it:
+            input_seqs.append(indexes_from_sentence(self.input_lang, pair))
+
+        indices = [i for i in range(len(batch_it))]
+        # Zip into pairs, sort by length (descending), unzip
+        input_seqs, indices = zip(*sorted(zip(input_seqs, indices), key=lambda p: len(p[0]), reverse=True))
+
+        # For input and target sequences, get array of lengths and pad with 0s to max length
+        input_lengths = [len(s) for s in input_seqs]
+        input_padded = [self.pad_seq(s, max(input_lengths)) for s in input_seqs]
+
+        # Turn padded arrays into (batch_size x max_len) tensors, transpose into (max_len x batch_size)
+        input_var = Variable(torch.LongTensor(input_padded)).transpose(0, 1)
+
+        if use_cuda:
+            input_var = input_var.cuda()
+
+        return input_var, input_lengths, indices
+
+    def idx_to_sentence(self, idx):
+        eos_id = self.output_lang.word2index[hp.EOS_text]
+        eos = idx.index(eos_id) if eos_id in idx else len(idx) - 1
+        return " ".join(self.output_lang.index2word[i] for i in idx[:eos + 1])
+
+    def batch_translate(self, sentences):
+        translations = []
+        for sentence_batch in self.batch(sentences, min(hp.batch_size, len(sentences))):
+            input_batch, input_lengths, sort_indices = self.next_batch(sentence_batch)
+            outputs = self._batch_translate(input_batch, input_lengths, 50, len(sentence_batch))
+            idx = outputs.topk(1, dim=2)[1].squeeze(2).transpose(1, 0).cpu().numpy().tolist()
+            sorted_translations = [self.idx_to_sentence(i) for i in idx]
+            batch_translations = [None] * len(sentence_batch)
+            for i, t in zip(sort_indices, sorted_translations):
+                batch_translations[i] = t
+            translations += batch_translations
+        return translations
+
+    def _batch_translate(self, input_batches, input_lengths, max_length=MAX_LENGTH, batch_size=256):
         if use_cuda:
             input_batches = input_batches.cuda()
 
         # Set to not-training mode to disable dropout
         self.encoder.train(False)
         self.decoder.train(False)
-
-        # Run through encoder
+        
+        # Run words through encoder
         encoder_outputs, encoder_hidden = self.encoder(input_batches, input_lengths, None)
 
-        # Create starting vectors for decoder
-        decoder_input = Variable(torch.LongTensor([SOS_token]))  # SOS
-        # decoder_hidden = encoder_hidden[:self.decoder.n_layers]  # Use last (forward) hidden state from encoder
+        # Prepare input and output variables
+        decoder_input = Variable(torch.LongTensor([SOS_token] * batch_size))
+        # decoder_hidden = encoder_hidden[:decoder.n_layers]  # Use last (forward) hidden state from encoder
         decoder_hidden = encoder_hidden
+        last_attn_vector = torch.zeros((batch_size, self.decoder.hidden_size))
+        all_decoder_outputs = Variable(torch.zeros(max_length, batch_size, self.decoder.output_size))
 
+        # Move new Variables to CUDA
         if use_cuda:
             decoder_input = decoder_input.cuda()
+            all_decoder_outputs = all_decoder_outputs.cuda()
+            last_attn_vector = last_attn_vector.cuda()
 
-        # Store output words and attention states
-        decoded_words = []
-        decoder_attentions = torch.zeros(max_length + 1, max_length + 1)
-
-        # Run through decoder
-        for di in range(max_length):
-
-            decoder_output, decoder_hidden, decoder_attention = self.decoder(
-                decoder_input, decoder_hidden, encoder_outputs
+        # Run through decoder one time step at a time
+        for t in range(max_length):
+            decoder_output, decoder_hidden, decoder_attn, last_attn_vector = self.decoder(
+                decoder_input, decoder_hidden, encoder_outputs, last_attn_vector
             )
-            decoder_attentions[di, :decoder_attention.size(2)] += decoder_attention.squeeze(0).squeeze(0).cpu().data
 
-            # Choose top word from output
-            topv, topi = decoder_output.data.topk(1)
-            ni = topi[0][0].item()
-            if ni == UNK_token:
-                v, i = decoder_attentions[di, :decoder_attention.size(2)].max(0)
+            all_decoder_outputs[t] = decoder_output
+            v, i = decoder_output.topk(1)
+            decoder_input = i.view(-1)
+            decoder_input = decoder_input.cuda() if use_cuda else decoder_input
 
-                if v.item() > 0.9 and i.item() < len(input_words):
-                    copy_word_idx = i.item()
-                    copy_word = input_words[copy_word_idx]
-                    decoded_words.append(str(copy_word))
-                else:
-                    decoded_words.append(self.output_lang.index2word[ni])
-            elif ni == EOS_token:
-                decoded_words.append('<EOS>')
-                break
-            else:
-                decoded_words.append(self.output_lang.index2word[ni])
-
-            log_output = nn.functional.log_softmax(decoder_output, dim=1)
-            topv, topi = log_output.data.topk(1)
-            ni = topi[0][0].item()
-            log_prob = topv[0][0].item()
-
-            # Next input is chosen word
-            decoder_input = Variable(torch.LongTensor([ni]))
-            if use_cuda: decoder_input = decoder_input.cuda()
-
-        # Set back to training mode
         self.encoder.train(True)
         self.decoder.train(True)
-
-        torch.set_grad_enabled(True)
-        return decoded_words, decoder_attentions[:di + 1, :len(encoder_outputs)]
+        return all_decoder_outputs
 
     def neat_translation(self, sentence, beam_size=1):
         hyps = self.beam_search(sentence, beam_size)
