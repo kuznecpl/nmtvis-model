@@ -35,6 +35,7 @@ class Sentence:
         self.beam = beam
         self.score = score
         self.corrected = False
+        self.flagged = False
         self.experiment_metrics = None
         self.experiment_type = "BEAM"
 
@@ -53,17 +54,27 @@ class Document:
         s = re.sub('\s{2,}', ' ', s)
         return s
 
+    def replace(self, sentence):
+        return sentence\
+            .replace('"', "&quot;")\
+            .replace("'", "&apos;")\
+            .replace('„', "&quot;")\
+            .replace('“', "&quot;")
+
+
     def load_content(self, filename):
         with open(UPLOAD_FOLDER + filename, "r") as f:
             content = f.read()
             doc = nlp(content)
+
+            sentences = content.split("\n")
             bpe = BPE(open(hp.bpe_file))
 
             content = []
 
-            for sent in doc.sents:
+            for sent in sentences:
                 tokens = nlp(str(sent))
-                tokens = [str(token).strip() for token in tokens if not str(token).isspace()]
+                tokens = [self.replace(str(token).strip()) for token in tokens if not str(token).isspace()]
                 sentence = " ".join(tokens)
                 sentence = bpe.process_line(sentence)
                 content.append(sentence)

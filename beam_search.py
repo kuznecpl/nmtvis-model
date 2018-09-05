@@ -86,8 +86,41 @@ class BeamSearch:
         self.beam_length = beam_length
         self.beam_coverage = beam_coverage
         self.bpe = BPE(open(hp.bpe_file))
+        self.prefix = self.compute_prefix()
+        self.process_corrections()
+
+    def compute_prefix(self):
+        if not self.correction_map:
+            return
+        print(self.correction_map)
+        assert len(list(self.correction_map.keys())) == 1
+
+        prefix = list(self.correction_map.keys())[0]
+        correction = self.correction_map[prefix]
+
+        prefix = prefix + " " + correction
+        raw_words = prefix.split(" ")[1:]
+        bpe_words = [self.bpe.process_line(word) if not word.endswith("@@") else word for word in raw_words]
+        words = [word for bpe_word in bpe_words for word in bpe_word.split(" ")]
+        return words
+
+    def process_corrections(self):
+        """Apply BPE to correction map, ignoring words that are already BPE'd"""
+        if not self.correction_map:
+            return
+        prefixes = list(self.correction_map.keys())
+
+        for prefix in prefixes:
+            raw_words = self.correction_map.pop(prefix).split(" ")
+            bpe_words = [self.bpe.process_line(word) if not word.endswith("@@") else word for word in raw_words]
+            words = [word for bpe_word in bpe_words for word in bpe_word.split(" ")]
+
+            for i in range(len(words)):
+                curr_prefix = " ".join(prefix.split(" ") + words[:i])
+                self.correction_map[curr_prefix] = words[i]
 
     def decode_topk(self, latest_tokens, states, last_attn_vectors, partials):
+        """Decode all current hypotheses on the beam, returning len(hypotheses) x beam_size candidates"""
 
         # len(latest_tokens) x self.beam_size)
         topk_ids = [[0 for _ in range(self.beam_size)] for _ in range(len(latest_tokens))]
@@ -121,7 +154,6 @@ class BeamSearch:
                 top_id = top_id.cpu()
 
             top_id = top_id.numpy()[0].tolist()[0]
-
 
             if top_id == UNK_token:
                 print("UNK found partial = {}".format(partials[i]))
@@ -167,6 +199,61 @@ class BeamSearch:
     def to_partial(self, tokens):
         return " ".join([self.output_lang.index2word[token] for token in tokens])
 
+    def init_hypothesis(self):
+        start_attn = [[[0 for _ in range(self.encoder_outputs.size(0))]]]
+        last_attn_vector = torch.zeros((1, self.decoder.hidden_size))
+
+        if use_cuda:
+            last_attn_vector = last_attn_vector.cuda()
+
+        if not self.correction_map:
+            return [Hypothesis([SOS_token], [self.output_lang.index2word[SOS_token]], [0.0],
+                               tuple(h.clone() for h in self.decoder_hidden),
+                               last_attn_vector.clone(),
+                               start_attn, [[]], [False]) for _ in range(self.beam_size)]
+
+        # Assume at most 1 correction prefix at all times
+        prefix = [self.output_lang.word2index[token] for token in self.prefix]
+        # We need: hidden state at the end of prefix, last_attn_vector, attention, tokens, candidates
+
+        tokens = [SOS_token]
+        candidates = [[]]
+        decoder_hidden = tuple(h.clone() for h in self.decoder_hidden)
+
+        for token in prefix:
+            decoder_input = Variable(torch.LongTensor([token]))
+
+            # Compute
+            if use_cuda:
+                decoder_input = decoder_input.cuda()
+            decoder_output, decoder_hidden, decoder_attention, last_attn_vector = self.decoder(decoder_input,
+                                                                                               decoder_hidden,
+                                                                                               self.encoder_outputs,
+                                                                                               last_attn_vector)
+            attn = decoder_attention.data
+            if use_cuda:
+                attn = attn.cpu()
+            attn = attn.numpy().tolist()[0]
+
+            topk_v, topk_i = decoder_output.data.topk(self.beam_size)
+            if use_cuda:
+                topk_v, topk_i = topk_v.cpu(), topk_i.cpu()
+            topk_v, topk_i = topk_v.numpy()[0], topk_i.numpy()[0]
+
+            topk_ids = topk_i.tolist()
+            topk_log_probs = topk_v.tolist()
+            curr_candidates = [self.output_lang.index2word[i] for i in topk_ids]
+
+            # Update
+            start_attn += [attn]
+            tokens += [token]
+            candidates += [curr_candidates]
+
+        return [Hypothesis(tokens, [self.output_lang.index2word[token] for token in tokens], [0.0] * len(tokens),
+                           tuple(h.clone() for h in decoder_hidden),
+                           last_attn_vector.clone(),
+                           start_attn, candidates, [False] * len(tokens)) for _ in range(self.beam_size)]
+
     def search(self):
 
         start_attn = [[[0 for _ in range(self.encoder_outputs.size(0))]]]
@@ -179,6 +266,9 @@ class BeamSearch:
                            tuple(h.clone() for h in self.decoder_hidden),
                            last_attn_vector.clone(),
                            start_attn, [[]], [False]) for _ in range(self.beam_size)]
+
+        hyps = self.init_hypothesis()
+
         for h in hyps:
             h.alpha = self.beam_length
             h.beta = self.beam_coverage
@@ -226,7 +316,7 @@ class BeamSearch:
                     break
             steps += 1
 
-        #print("Beam Search found {} hypotheses for beam_size {}".format(len(result), self.beam_size))
+        # print("Beam Search found {} hypotheses for beam_size {}".format(len(result), self.beam_size))
         res = self._best_hyps(result, normalize=True)
         if res:
             res[0].is_golden = True
