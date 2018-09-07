@@ -53,7 +53,6 @@ def train(input_batches, input_lengths, target_batches, target_lengths, encoder,
 
     max_target_length = max(target_lengths)
     all_decoder_outputs = Variable(torch.zeros(max_target_length, batch_size, decoder.output_size))
-    print(target_lengths)
 
     # Move new Variables to CUDA
     if use_cuda:
@@ -123,7 +122,7 @@ def train_iters(seq2seq_model, pairs,
     optim_type = optim.Adam if not retrain else optim.Adagrad
 
     # Initialize optimizers and criterion
-    if not retrain:
+    if not retrain or retrain:
         encoder_optimizer = optim_type(filter(lambda p: p.requires_grad, encoder.parameters()), lr=learning_rate,
                                        weight_decay=weight_decay)
     else:
@@ -314,6 +313,8 @@ def retrain_iters(seq2seq_model, pairs,
 
         # for param in decoder.out.parameters():
         # param.requires_grad = True
+    for param in encoder.lstm.parameters():
+        param.requires_grad = True
 
     return train_iters(seq2seq_model, pairs, eval_pairs, n_epochs, print_every, evaluate_every,
                        save_every, learning_rate, decoder_learning_ratio, batch_size,
