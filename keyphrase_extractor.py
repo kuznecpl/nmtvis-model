@@ -59,7 +59,7 @@ class DomainSpecificExtractor:
 
         domain_words = []
         for word in in_lang.word2count:
-            if train_vocab[word] < self.frequency_threshold:
+            if train_vocab[word] < self.frequency_threshold and in_lang.word2count[word] > 0:
                 domain_words.append((word, in_lang.word2count[word]))
 
         domain_words = sorted(domain_words, key=lambda w: in_lang.word2count[w[0]], reverse=True)
