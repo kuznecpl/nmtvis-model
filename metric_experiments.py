@@ -80,8 +80,10 @@ def compute_avg_gleu(targets, translations):
     return gleu_sum / len(targets)
 
 
-def compute_gleu(target, translation):
-    return gleu_score.sentence_gleu([target.replace("@@ ", "").split(" ")], translation.replace("@@ ", "").split(" "))
+def compute_gleu(targets, translations):
+    references, translations = [[target.replace("@@ ", "").split(" ")] for target in targets], [
+        t.replace("@@ ", "").split(" ") for t in translations]
+    return gleu_score.corpus_gleu(references, translations)
 
 
 def gleu_distr(sources, targets, translations):
@@ -131,7 +133,7 @@ class MetricExperiment:
         self.num_sentences = num_sentences
         self.batch_translate = batch_translate
         self.test_sentences = test_sentences
-        self.evaluate_every = 10
+        self.evaluate_every = 5
 
         self.metric_bleu_scores = {}
         self.metric_gleu_scores = {}
@@ -143,7 +145,7 @@ class MetricExperiment:
         self.palette = sns.color_palette()
 
     def save_data(self):
-        prefix = "v2_batch_" if self.batch_translate else "v2_beam_"
+        prefix = ("v2_batch_" if self.batch_translate else "v2_beam_") + str(self.evaluate_every) + "_"
         pickle.dump(self.metric_bleu_scores, open(prefix + "metric_bleu_scores.pkl", "wb"))
         pickle.dump(self.metric_gleu_scores, open(prefix + "metric_gleu_scores.pkl", "wb"))
         pickle.dump(self.metric_precisions, open(prefix + "metric_precisions.pkl", "wb"))
@@ -152,7 +154,7 @@ class MetricExperiment:
 
     def run(self):
         _, _, pairs = self.loader.load()
-        random.seed(2308)
+        random.seed(2018)
         random.shuffle(pairs)
 
         pairs = pairs[:self.num_sentences]
@@ -162,6 +164,7 @@ class MetricExperiment:
         keyphrases = self.extractor.extract_keyphrases(n_results=100)
         print(keyphrases)
         target_keyphrases = self.target_extractor.extract_keyphrases(n_results=100)
+        print(target_keyphrases)
 
         for i, pair in enumerate(pairs):
             if i % 10 == 0:
@@ -193,7 +196,7 @@ class MetricExperiment:
             "coverage_penalty",
             "coverage_deviation_penalty",
             "confidence",
-            "length",
+            #"length",
             "ap_in",
             "ap_out",
             "random",
@@ -246,6 +249,12 @@ class MetricExperiment:
         print("Translations")
         print(translations[:5])
 
+        pretraining_bleu = compute_bleu(test_targets, test_translations)
+        pretraining_gleu = compute_gleu(test_targets, test_translations)
+
+        prerecall = unigram_recall(target_keyphrases, test_targets, test_translations)
+        preprecision = unigram_precision(target_keyphrases, test_targets, test_translations)
+
         for i in range(1, n + 1):
             print()
             print("Correcting {} of {} sentences".format(i, n))
@@ -255,12 +264,6 @@ class MetricExperiment:
             # Compute BLEU before training for comparison
             # pretraining_bleu = compute_bleu(targets[curr_end:], translations[curr_end:])
             # pretraining_gleu = compute_avg_gleu(targets[curr_end:], corrected_translations[curr_end:])
-
-            pretraining_bleu = compute_bleu(test_targets, test_translations)
-            pretraining_gleu = compute_avg_gleu(test_targets, test_translations)
-
-            prerecall = unigram_recall(target_keyphrases, test_targets, test_translations)
-            preprecision = unigram_precision(target_keyphrases, test_targets, test_translations)
 
             print("Training Data: {}\n : {}\n".format(sources[i - 1], targets[i - 1]))
             # Now train, and compute BLEU again
@@ -290,7 +293,7 @@ class MetricExperiment:
 
             # Compute posttraining BLEU
             posttraining_bleu = compute_bleu(test_targets, corrected_translations)
-            posttraining_gleu = compute_avg_gleu(test_targets, corrected_translations)
+            posttraining_gleu = compute_gleu(test_targets, corrected_translations)
 
             postrecall = unigram_recall(target_keyphrases, test_targets, corrected_translations)
             postprecision = unigram_precision(target_keyphrases, test_targets, corrected_translations)

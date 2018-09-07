@@ -77,7 +77,7 @@ class CorrelationExperiment:
             "coverage_penalty",
             "coverage_deviation_penalty",
             "confidence",
-            "length",
+            "keyphrase_score",
             "ap_in",
             "ap_out"
         ]
@@ -189,6 +189,8 @@ class CorrelationExperiment:
             for metric in scores:
                 if metric == "coverage_penalty" and scores[metric] > 80:
                     continue
+                if metric == "keyphrase_score" and scores[metric] == 0:
+                    continue
 
                 if not metric in self.metric_to_gleu:
                     self.metric_to_gleu[metric] = {}
@@ -201,8 +203,8 @@ class CorrelationExperiment:
 
 seq2seq_model = load_model()
 
-exp1 = CorrelationExperiment(seq2seq_model, "data/medical.bpe.de", "data/medical.bpe.en", num_sentences=500)
-# exp1 = CorrelationExperiment(seq2seq_model, hp.source_test_file, hp.target_test_file, num_sentences=500)
+#exp1 = CorrelationExperiment(seq2seq_model, "data/medical.bpe.de", "data/medical.bpe.en", num_sentences=500)
+exp1 = CorrelationExperiment(seq2seq_model, hp.source_test_file, hp.target_test_file, num_sentences=700)
 exp1.run()
 exp1.plot_distr("metrics_dist.png")
 exp1.plot_correlation("corr_medical.png")
