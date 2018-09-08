@@ -35,6 +35,7 @@ class Sentence:
         self.beam = beam
         self.score = score
         self.corrected = False
+        self.diff = ""
         self.flagged = False
         self.experiment_metrics = None
         self.experiment_type = "BEAM"

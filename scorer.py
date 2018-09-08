@@ -17,7 +17,7 @@ class Scorer:
 
         for word in sentence.replace("@@ ", "").split(" "):
             for keyphrase, freq in keyphrases:
-                score += word.lower().count(keyphrase.lower()) * math.log(freq)
+                score += word.lower().count(keyphrase.lower()) * freq
         return score
 
     def length_deviation(self, source, translation):

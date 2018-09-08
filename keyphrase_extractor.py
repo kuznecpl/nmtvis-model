@@ -32,7 +32,7 @@ class Extractor:
 
 
 class DomainSpecificExtractor:
-    def __init__(self, source_file, train_source_file, train_vocab_file, frequency_threshold=10):
+    def __init__(self, source_file, train_source_file, train_vocab_file, frequency_threshold=5):
         self.source_file = source_file
         self.frequency_threshold = frequency_threshold
 
@@ -60,7 +60,11 @@ class DomainSpecificExtractor:
         domain_words = []
         for word in in_lang.word2count:
             if train_vocab[word] < self.frequency_threshold and in_lang.word2count[word] > 0:
-                domain_words.append((word, in_lang.word2count[word]))
+                freq = 0
+                for source, _ in pairs:
+                    if word.lower() in source.lower():
+                        freq += 1
+                domain_words.append((word, freq))
 
         domain_words = sorted(domain_words, key=lambda w: in_lang.word2count[w[0]], reverse=True)
         return domain_words[:n_results]

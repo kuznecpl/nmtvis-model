@@ -200,7 +200,7 @@ class BeamSearch:
         return " ".join([self.output_lang.index2word[token] for token in tokens])
 
     def init_hypothesis(self):
-        start_attn = [[[0 for _ in range(self.encoder_outputs.size(0))]]]
+        start_attn = []
         last_attn_vector = torch.zeros((1, self.decoder.hidden_size))
 
         if use_cuda:
@@ -213,12 +213,15 @@ class BeamSearch:
                                start_attn, [[]], [False]) for _ in range(self.beam_size)]
 
         # Assume at most 1 correction prefix at all times
-        prefix = [self.output_lang.word2index[token] for token in self.prefix]
+        prefix = [SOS_token] + [self.output_lang.word2index[token] for token in self.prefix]
         # We need: hidden state at the end of prefix, last_attn_vector, attention, tokens, candidates
 
-        tokens = [SOS_token]
-        candidates = [[]]
+        tokens = []
+        candidates = []
         decoder_hidden = tuple(h.clone() for h in self.decoder_hidden)
+
+        curr_candidates = []
+        attn = [[0 for _ in range(self.encoder_outputs.size(0))]]
 
         for token in prefix:
             decoder_input = Variable(torch.LongTensor([token]))
@@ -230,6 +233,12 @@ class BeamSearch:
                                                                                                decoder_hidden,
                                                                                                self.encoder_outputs,
                                                                                                last_attn_vector)
+
+            # Update
+            start_attn += [attn]
+            tokens += [token]
+            candidates += [curr_candidates]
+
             attn = decoder_attention.data
             if use_cuda:
                 attn = attn.cpu()
@@ -244,15 +253,10 @@ class BeamSearch:
             topk_log_probs = topk_v.tolist()
             curr_candidates = [self.output_lang.index2word[i] for i in topk_ids]
 
-            # Update
-            start_attn += [attn]
-            tokens += [token]
-            candidates += [curr_candidates]
-
-        return [Hypothesis(tokens, [self.output_lang.index2word[token] for token in tokens], [0.0] * len(tokens),
+        return [Hypothesis(list(tokens), [self.output_lang.index2word[token] for token in tokens], [0.0] * len(tokens),
                            tuple(h.clone() for h in decoder_hidden),
                            last_attn_vector.clone(),
-                           start_attn, candidates, [False] * len(tokens)) for _ in range(self.beam_size)]
+                           list(start_attn), candidates, [False] * len(tokens)) for _ in range(self.beam_size)]
 
     def search(self):
 
@@ -261,11 +265,6 @@ class BeamSearch:
 
         if use_cuda:
             last_attn_vector = last_attn_vector.cuda()
-
-        hyps = [Hypothesis([SOS_token], [self.output_lang.index2word[SOS_token]], [0.0],
-                           tuple(h.clone() for h in self.decoder_hidden),
-                           last_attn_vector.clone(),
-                           start_attn, [[]], [False]) for _ in range(self.beam_size)]
 
         hyps = self.init_hypothesis()
 
