@@ -28,7 +28,7 @@ input_lang, output_lang, pairs = None, None, None
 
 _, _, eval_pairs = eval_loader.load()
 
-if not os.path.isfile(hp.prefix + "input.dict"):
+if hp.load_vocabs or not os.path.isfile(hp.prefix + "input.dict"):
     input_lang, output_lang, pairs = loader.load()
     pickle.dump(input_lang, open(hp.prefix + "input.dict", "wb"))
     pickle.dump(output_lang, open(hp.prefix + "output.dict", "wb"))

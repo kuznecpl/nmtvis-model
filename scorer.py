@@ -6,7 +6,7 @@ class Scorer:
         return {"coverage_penalty": self.coverage_penalty(attention),
                 "coverage_deviation_penalty": self.coverage_deviation_penalty(attention),
                 "confidence": self.confidence(attention),
-                "length": len(source.split(" ")),
+                "length": len(source.replace("@@ ", "").split(" ")),
                 "ap_in": self.absentmindedness_penalty_in(attention),
                 "ap_out": self.absentmindedness_penalty_out(attention),
                 "keyphrase_score": self.keyphrase_score(source, keyphrases, attention)
